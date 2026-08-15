@@ -48,6 +48,16 @@ dates rather than letting it run for an hour.
 Videos are skipped unless `--include-videos` is passed. They need a frame
 extracted before anything can be judged, which is slower.
 
+### 2b. Read the diagnosis before you look
+
+`manifest.csv` carries a `diagnosis` column per image. Two categories:
+
+- **`auto:`** already repaired (blown highlights, dark face, strong colour cast).
+- **`your call:`** reported and deliberately NOT touched (underexposure, crushed
+  shadows, softness), because those are frequently the intent rather than a mistake.
+  Look at the picture and decide. A low-key silhouette measures as underexposed.
+- **`UNUSABLE`** severe motion blur. Discard it, do not try to sharpen it.
+
 ### 3. Look at the contact sheets
 
 Read every sheet the command printed. Each tile is labelled with a global index,
