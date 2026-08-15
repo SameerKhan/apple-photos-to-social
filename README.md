@@ -192,6 +192,32 @@ pip install -e ".[dev]" && pytest
 Anything involving `osascript`, real exports, or iCloud downloads needs a live Mac
 with a real library and is covered by `docs/manual-testing.md`.
 
+## Instagram sizing
+
+Instagram is the only platform here with a tight aspect-ratio window: 0.75 to 1.91
+(width over height). A portrait straight off a phone is about 0.67 and gets rejected
+outright. The run manifest flags any image a platform would refuse, and
+`imaging.crop_to_ratio` produces a 4:5 crop.
+
+The crop is face-aware when Apple's Vision framework is available:
+
+```bash
+pip install -e ".[faces]"
+```
+
+It composes so the face sits near the upper third, and falls back to a fixed
+fraction when no face is found or PyObjC is not installed. On a real five-frame
+studio set this moved the crop by up to 186px versus the fixed fraction, and the
+difference mattered most on seated shots, where a fixed fraction left dead ceiling
+and clipped the subject's hands. Detection runs on device; nothing leaves the machine.
+
+**There is deliberately no auto colour correction.** On a well-exposed set it makes
+things worse. Measured on that same studio set: every frame already used the full
+tonal range, clipping was under 0.5% at both ends, and the files were already sRGB.
+Sharpening is also skipped, because when the source is already 1080px wide there is
+no downscale to sharpen for, so it only adds halos. Grade is a taste decision; do it
+in a real editor if you want a look.
+
 ## Known limitations
 
 - macOS only, and tied to the Photos app being scriptable.

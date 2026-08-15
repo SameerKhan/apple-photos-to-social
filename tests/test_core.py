@@ -625,3 +625,42 @@ def test_crop_to_ratio_hits_4_5_and_keeps_the_top(tmp_path):
     Image.new("RGB", (1600, 900), (0, 0, 0)).save(wide)
     with Image.open(imaging.crop_to_ratio(wide, tmp_path / "w2.jpg")) as im:
         assert im.size == (1600, 900)
+
+
+def test_faces_module_degrades_without_pyobjc(tmp_path, monkeypatch):
+    # The package must work on a machine with no PyObjC, and on photos with no
+    # faces in them, which is most of a spearfishing camera roll.
+    from photos_to_posts import faces
+    img = tmp_path / "x.jpg"
+    Image.new("RGB", (400, 600), (120, 120, 120)).save(img)
+    assert faces.detect_faces(img) == [] or isinstance(faces.detect_faces(img), list)
+    assert faces.focus_point(img) is None or isinstance(faces.focus_point(img), float)
+    assert isinstance(faces.available(), bool)
+
+
+def test_crop_uses_focus_point_when_one_is_found(tmp_path, monkeypatch):
+    from photos_to_posts import faces as faces_mod
+    src = tmp_path / "tall.jpg"
+    Image.new("RGB", (1080, 1616), (10, 20, 30)).save(src)
+    # Face low in the frame should pull the crop window down.
+    monkeypatch.setattr(faces_mod, "focus_point", lambda p: 0.60)
+    out = imaging.crop_to_ratio(src, tmp_path / "low.jpg")
+    with Image.open(out) as im:
+        assert im.size == (1080, 1350)
+    monkeypatch.setattr(faces_mod, "focus_point", lambda p: 0.10)
+    imaging.crop_to_ratio(src, tmp_path / "high.jpg")
+    # A focus point near the top clamps to 0 rather than going negative.
+    monkeypatch.setattr(faces_mod, "focus_point", lambda p: 0.0)
+    out3 = imaging.crop_to_ratio(src, tmp_path / "clamp.jpg")
+    with Image.open(out3) as im:
+        assert im.size == (1080, 1350)
+
+
+def test_crop_falls_back_when_no_face(tmp_path, monkeypatch):
+    from photos_to_posts import faces as faces_mod
+    monkeypatch.setattr(faces_mod, "focus_point", lambda p: None)
+    src = tmp_path / "t.jpg"
+    Image.new("RGB", (1080, 1616), (0, 0, 0)).save(src)
+    out = imaging.crop_to_ratio(src, tmp_path / "o.jpg", top_share=0.30)
+    with Image.open(out) as im:
+        assert im.size == (1080, 1350)

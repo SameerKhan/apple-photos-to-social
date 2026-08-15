@@ -26,6 +26,9 @@ dependencies = ["Pillow>=10.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# Face-aware cropping via Apple Vision. macOS only, on device, nothing leaves
+# the machine. Everything degrades gracefully without it.
+faces = ["pyobjc-framework-Vision>=10.0", "pyobjc-framework-Quartz>=10.0"]
 
 [project.scripts]
 photos2social = "photos_to_posts.cli:main"
