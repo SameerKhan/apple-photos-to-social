@@ -19,6 +19,7 @@ from typing import Callable, Sequence
 
 from . import applescript as ps
 from . import imaging
+from . import quality
 from .config import Config, haversine_m
 from .ledger import (EXCLUDED_PRIVATE, SEEN, SETTLED, SETTLED_STRICT, TERMINAL,
                      Ledger, hamming)
@@ -44,6 +45,9 @@ class ReviewResult:
     skipped_zone: int = 0
     skipped_unknown_location: int = 0
     skipped_not_allowlisted: int = 0
+    auto_repaired: int = 0
+    needs_judgement: int = 0
+    unusable: int = 0
     skipped_seen_before_visually: int = 0
     videos_deferred: int = 0
     exported: int = 0
@@ -72,6 +76,8 @@ class ReviewResult:
             "geofenced": self.skipped_zone,
             "location unknown": self.skipped_unknown_location,
             "not in allowlist": self.skipped_not_allowlisted,
+            "auto-repaired": self.auto_repaired,
+            "unusable (motion blur)": self.unusable,
             "videos deferred": self.videos_deferred,
             "export failed": self.export_failures,
         }
@@ -338,6 +344,11 @@ def run_review(cfg: Config, *, days: int | None = None, since: datetime | None =
             result.export_failures = len(candidates) - len(mapping)
 
             by_uuid = {a.uuid: a for a in candidates}
+            repair_dir = run_dir / "repaired"
+            repair_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            _harden(repair_dir, 0o700)
+            diagnoses: dict[str, quality.Diagnosis] = {}
+            repairs: dict[str, Path] = {}
             frames: list[imaging.Frame] = []
             for a in candidates:
                 src = mapping.get(a.uuid)
@@ -359,6 +370,23 @@ def run_review(cfg: Config, *, days: int | None = None, since: datetime | None =
                     _harden(thumb, 0o600)
                 except OSError:
                     continue
+
+                # Diagnose the exported pixels, and repair ONLY faults that have no
+                # plausible artistic reading. See quality.py for why the rest is left
+                # for a human: a measurement cannot tell a mistake from an intention.
+                diag = quality.diagnose(src, face_box=_face_box(src))
+                if diag is not None:
+                    diagnoses[a.uuid] = diag
+                    if diag.unusable:
+                        result.unusable += 1
+                    if diag.auto_fixable:
+                        repaired = quality.repair(diag, repair_dir / src.name)
+                        if repaired is not None:
+                            _harden(repaired, 0o600)
+                            repairs[a.uuid] = repaired
+                            result.auto_repaired += 1
+                    if diag.needs_judgement:
+                        result.needs_judgement += 1
                 frames.append(imaging.Frame(uuid=a.uuid, path=thumb, filename=a.filename,
                                             captured_at=a.captured_at, phash=h))
             result.exported = len(frames)
@@ -377,7 +405,8 @@ def run_review(cfg: Config, *, days: int | None = None, since: datetime | None =
             say(f"Building contact sheets for {len(reps)} distinct moments")
             result.sheets = imaging.contact_sheets(
                 reps, run_dir / "sheets", counts=result.burst_counts)
-            result.manifest_path = _write_manifest(run_dir, reps, result.burst_counts)
+            result.manifest_path = _write_manifest(
+                run_dir, reps, result.burst_counts, diagnoses, repairs)
 
             # Everything that reached the eyeball stage is recorded, not just the
             # cluster representatives, or the non-representative burst frames come
@@ -491,8 +520,19 @@ def _window_label(window: Sequence[ps.Asset]) -> str | None:
     return f"{lo:%Y-%m-%d}..{hi:%Y-%m-%d}"
 
 
+def _face_box(path: Path) -> tuple[float, float, float, float] | None:
+    """Face rectangle for exposure checking, if Vision is available."""
+    from . import faces
+    found = faces.detect_faces(path)
+    if not found:
+        return None
+    b = found[0]
+    return (b.x, b.y, b.width, b.height)
+
+
 def _write_manifest(run_dir: Path, frames: Sequence[imaging.Frame],
-                    counts: dict[str, int]) -> Path:
+                    counts: dict[str, int], diagnoses: dict | None = None,
+                    repairs: dict | None = None) -> Path:
     """Map contact-sheet numbers back to asset ids.
 
     Without this the sheets are unusable for follow-up: a reviewer says "#37" and
@@ -503,7 +543,7 @@ def _write_manifest(run_dir: Path, frames: Sequence[imaging.Frame],
     with path.open("w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["index", "uuid", "filename", "captured_at", "burst_count",
-                    "ratio", "fits", "thumbnail"])
+                    "ratio", "fits", "diagnosis", "repaired_file", "thumbnail"])
         for i, f in enumerate(frames, 1):
             ratio, fits = "", ""
             try:
@@ -516,6 +556,10 @@ def _write_manifest(run_dir: Path, frames: Sequence[imaging.Frame],
                     fits = "ok" if not bad else "too tall for " + "/".join(sorted(bad))
             except OSError:
                 pass
+            d = (diagnoses or {}).get(f.uuid)
+            rep = (repairs or {}).get(f.uuid)
             w.writerow([i, f.uuid, f.filename, f.captured_at.isoformat(),
-                        counts.get(f.uuid, 1), ratio, fits, str(f.path)])
+                        counts.get(f.uuid, 1), ratio, fits,
+                        d.summary() if d else "", str(rep) if rep else "",
+                        str(f.path)])
     return path

@@ -664,3 +664,97 @@ def test_crop_falls_back_when_no_face(tmp_path, monkeypatch):
     out = imaging.crop_to_ratio(src, tmp_path / "o.jpg", top_share=0.30)
     with Image.open(out) as im:
         assert im.size == (1080, 1350)
+
+
+# --------------------------------------------------------------------------
+# Quality diagnosis and conservative repair
+# --------------------------------------------------------------------------
+
+def _solid(tmp_path, name, rgb, size=(300, 400)):
+    p = tmp_path / name
+    Image.new("RGB", size, rgb).save(p, quality=95)
+    return p
+
+
+def test_quality_available_is_boolean():
+    from photos_to_posts import quality
+    assert isinstance(quality.available(), bool)
+
+
+def test_diagnose_flags_a_blown_image(tmp_path):
+    from photos_to_posts import quality
+    if not quality.available():
+        pytest.skip("numpy not installed")
+    d = quality.diagnose(_solid(tmp_path, "white.jpg", (254, 254, 254)))
+    assert "blown_highlights" in d.faults
+    assert "blown_highlights" in d.auto_fixable
+
+
+def test_diagnose_separates_intent_from_defect(tmp_path):
+    # THE central rule of this module. A dark frame is ambiguous: it might be a
+    # silhouette. It must never be auto-repaired.
+    from photos_to_posts import quality
+    if not quality.available():
+        pytest.skip("numpy not installed")
+    d = quality.diagnose(_solid(tmp_path, "dark.jpg", (8, 8, 8)))
+    assert "underexposed" in d.faults
+    assert "underexposed" in d.needs_judgement
+    assert "underexposed" not in d.auto_fixable
+    assert quality.repair(d, tmp_path / "out.jpg") is None, "a dark frame was auto-edited"
+
+
+def test_crushed_shadows_are_never_auto_fixed(tmp_path):
+    # REGRESSION: a dawn jetty shot with 14.5% crushed shadows was "corrected" into
+    # something flatter and worse. Shadow clipping is frequently the intent.
+    from photos_to_posts import quality
+    if not quality.available():
+        pytest.skip("numpy not installed")
+    import numpy as np
+    a = np.zeros((400, 300, 3), dtype=np.uint8)
+    a[:60] = 200                      # a bright sky over a black foreground
+    p = tmp_path / "lowkey.jpg"
+    Image.fromarray(a).save(p, quality=95)
+    d = quality.diagnose(p)
+    assert "crushed_shadows" in d.faults
+    assert "crushed_shadows" not in d.auto_fixable
+
+
+def test_repair_returns_none_when_nothing_to_do(tmp_path):
+    from photos_to_posts import quality
+    if not quality.available():
+        pytest.skip("numpy not installed")
+    d = quality.diagnose(_solid(tmp_path, "mid.jpg", (128, 128, 128)))
+    assert quality.repair(d, tmp_path / "x.jpg") is None
+
+
+def test_colour_cast_ignores_a_coloured_subject(tmp_path):
+    # REGRESSION: grey-world called an orange takeaway box a 149% red cast. A photo of
+    # a red object is not a red cast, and the neutral-pixel mask is what fixes it.
+    from photos_to_posts import quality
+    if not quality.available():
+        pytest.skip("numpy not installed")
+    import numpy as np
+    a = np.full((400, 300, 3), 130, dtype=np.uint8)   # neutral grey surroundings
+    a[100:300, 60:240] = (230, 90, 20)                # a big orange object
+    p = tmp_path / "orange.jpg"
+    Image.fromarray(a).save(p, quality=95)
+    d = quality.diagnose(p)
+    assert "colour_cast" not in d.faults, f"false cast: {d.cast:.0f}%"
+
+
+def test_unusable_blur_is_reported_not_repaired(tmp_path):
+    from photos_to_posts import quality
+    if not quality.available():
+        pytest.skip("numpy not installed")
+    d = quality.diagnose(_solid(tmp_path, "flat.jpg", (120, 120, 120)))
+    assert d.unusable  # a featureless frame has no high-frequency detail
+    assert "unfixable_blur" not in d.auto_fixable
+
+
+def test_diagnosis_summary_is_human_readable(tmp_path):
+    from photos_to_posts import quality
+    if not quality.available():
+        pytest.skip("numpy not installed")
+    d = quality.diagnose(_solid(tmp_path, "w.jpg", (254, 254, 254)))
+    s = d.summary()
+    assert "auto:" in s or "your call:" in s

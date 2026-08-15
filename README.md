@@ -211,12 +211,35 @@ studio set this moved the crop by up to 186px versus the fixed fraction, and the
 difference mattered most on seated shots, where a fixed fraction left dead ceiling
 and clipped the subject's hands. Detection runs on device; nothing leaves the machine.
 
-**There is deliberately no auto colour correction.** On a well-exposed set it makes
-things worse. Measured on that same studio set: every frame already used the full
-tonal range, clipping was under 0.5% at both ends, and the files were already sRGB.
-Sharpening is also skipped, because when the source is already 1080px wide there is
-no downscale to sharpen for, so it only adds halos. Grade is a taste decision; do it
-in a real editor if you want a look.
+## Quality: diagnose everything, repair almost nothing
+
+Every exported image is measured: exposure, dynamic range, shadow and highlight
+clipping, colour cast, sharpness, and face-region exposure specifically. Faults land
+in one of two buckets, and the split is the whole design:
+
+**Auto-repaired**, because no plausible artistic reading exists:
+blown highlights, a face too dark to read, a strong colour cast on neutral surfaces.
+
+**Reported and left alone**, because the "fault" is frequently the intent:
+overall underexposure, crushed shadows, softness.
+
+There is a specific photograph behind that rule. A dawn shot of a jetty measured 14.5%
+crushed shadows. Every metric called it underexposed. It was a deliberate low-key
+silhouette, and "correcting" it brightened away the only reason it was worth posting.
+**A measurement cannot tell a mistake from an intention**, so anything ambiguous gets
+a note in the manifest and a human decision.
+
+Severe motion blur is reported as unusable rather than sharpened, because sharpening
+cannot recover it.
+
+```bash
+photos2social diagnose ~/Pictures/somefolder        # report only
+photos2social diagnose ~/Pictures/somefolder --fix  # also repair the unambiguous
+```
+
+Measured on a real 213-photo month: 27% needed nothing, and among the 28 photos
+actually worth posting, 61% had a fixable defect. Assuming a camera roll is fine is
+not safe; neither is auto-correcting all of it.
 
 ## Known limitations
 

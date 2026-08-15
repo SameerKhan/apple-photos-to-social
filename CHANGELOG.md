@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.0 (2026-08-16)
+
+- **Per-image quality diagnosis** (`quality.py`, `photos2social diagnose`): exposure,
+  dynamic range, shadow and highlight clipping, colour cast, sharpness, and
+  face-region exposure.
+- **Conservative repair.** Only blown highlights, underexposed faces and strong colour
+  casts are auto-fixed. Underexposure, crushed shadows and softness are reported and
+  left alone, because they are frequently the photographer's intent rather than a
+  mistake. Severe motion blur is reported as unusable rather than sharpened.
+- Colour cast is measured over near-neutral mid-tone pixels only. Plain grey-world
+  produced 57 false positives on a real camera roll, including calling an orange
+  takeaway box a 149% red cast.
+- **Face-aware 4:5 cropping** via Apple Vision, on device, optional extra.
+- Manifest gains `ratio`, `fits`, `diagnosis` and `repaired_file` columns.
+- numpy is now a runtime dependency.
+
 ## 0.1.1 (2026-08-15)
 
 Fixes from an adversarial review of the 0.1.0 release. Four were confirmed by

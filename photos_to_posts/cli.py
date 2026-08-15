@@ -7,7 +7,7 @@ Commands:
   review    the full pass: export, dedupe, contact sheets, manifest, ledger
   mark      record a decision against an asset (shortlisted / posted / private)
   stats     ledger totals
-  coverage  how far back the library has been reviewed
+  coverage  how far back the library has been reviewed\n  diagnose  report what a photo actually needs, and optionally fix it
   purge     delete exported pixels, keeping the ledger
 
 ``scan`` exists so the expensive step is always opt-in: you can see the shape of
@@ -72,6 +72,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     coverage = sub.add_parser("coverage", help="assets reviewed per month")
     _add_common(coverage)
+
+    diag = sub.add_parser("diagnose", help="report what a photo or folder actually needs")
+    _add_common(diag)
+    diag.add_argument("path", help="an image file, or a directory of them")
+    diag.add_argument("--fix", action="store_true",
+                      help="also repair the unambiguous faults, writing *_fixed files")
 
     purge = sub.add_parser("purge", help="delete exported pixels, keep the ledger")
     _add_common(purge)
@@ -223,6 +229,42 @@ def cmd_coverage(args) -> int:
     return 0
 
 
+def cmd_diagnose(args) -> int:
+    from . import quality
+    if not quality.available():
+        print("numpy is required: pip install numpy", file=sys.stderr)
+        return 1
+    root = Path(args.path).expanduser()
+    files = sorted(p for p in (root.rglob("*") if root.is_dir() else [root])
+                   if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".heic", ".tif", ".tiff"})
+    if not files:
+        print(f"no images found at {root}", file=sys.stderr)
+        return 1
+
+    from . import faces
+    ok = fixed = 0
+    for f in files:
+        box = None
+        found = faces.detect_faces(f)
+        if found:
+            b = found[0]
+            box = (b.x, b.y, b.width, b.height)
+        d = quality.diagnose(f, face_box=box)
+        if d is None:
+            continue
+        if not d.faults:
+            ok += 1
+        print(f"{f.name:34s} {d.summary()}")
+        if args.fix and d.auto_fixable:
+            out = quality.repair(d, f.with_name(f.stem + "_fixed" + f.suffix))
+            if out:
+                fixed += 1
+                print(f"{'':34s}   -> wrote {out.name}")
+    print(f"\n{len(files)} images, {ok} need nothing, {len(files)-ok} flagged"
+          + (f", {fixed} repaired" if args.fix else ""))
+    return 0
+
+
 def cmd_purge(args) -> int:
     cfg = load_config(args.config)
     if not cfg.workspace.exists():
@@ -242,7 +284,8 @@ def cmd_purge(args) -> int:
 
 COMMANDS = {
     "doctor": cmd_doctor, "scan": cmd_scan, "review": cmd_review,
-    "mark": cmd_mark, "stats": cmd_stats, "coverage": cmd_coverage, "purge": cmd_purge,
+    "mark": cmd_mark, "stats": cmd_stats, "coverage": cmd_coverage,
+    "diagnose": cmd_diagnose, "purge": cmd_purge,
 }
 
 
