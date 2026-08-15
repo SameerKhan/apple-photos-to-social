@@ -162,6 +162,14 @@ def apply_filters(assets: Sequence[ps.Asset], cfg: Config, ledger: Ledger,
         if a.uuid in settled:
             result.skipped_known += 1
             continue
+        # Privacy is evaluated BEFORE the cheap content filters. Otherwise a
+        # screenshot or a video that happens to live in a private album is
+        # dropped for the wrong reason and never recorded as private, so it
+        # loses that protection the moment the other filter stops applying.
+        if a.uuid in album_ids:
+            result.skipped_album += 1
+            excluded_private.append((a, "album"))
+            continue
         if include_ids is not None and a.uuid not in include_ids:
             result.skipped_not_allowlisted += 1
             continue
@@ -170,10 +178,6 @@ def apply_filters(assets: Sequence[ps.Asset], cfg: Config, ledger: Ledger,
             continue
         if cfg.min_pixels and a.width * a.height and a.width * a.height < cfg.min_pixels:
             result.skipped_small += 1
-            continue
-        if a.uuid in album_ids:
-            result.skipped_album += 1
-            excluded_private.append((a, "album"))
             continue
         if a.kind == "video" and not include_videos:
             result.videos_deferred += 1
@@ -242,8 +246,11 @@ def screen_against_history(frames: Sequence[imaging.Frame], ledger: Ledger, cfg:
         if frame.phash is None:
             kept.append(frame)
             continue
+        # Skip the asset's own history row. With resurface_settled the asset is
+        # deliberately back in the candidate set, and matching it against itself
+        # both drops it again and rewrites its status.
         if any(hamming(stored, frame.phash) <= cfg.history_max_distance
-               for _uuid, stored, _st in history):
+               for uuid, stored, _st in history if uuid != frame.uuid):
             result.skipped_seen_before_visually += 1
             asset = assets.get(frame.uuid)
             if asset is not None:
@@ -293,7 +300,9 @@ def run_review(cfg: Config, *, days: int | None = None, since: datetime | None =
                                    include_videos=include_videos,
                                    allow_unfiltered=allow_unfiltered,
                                    dry_run=dry_run)
-        if limit:
+        if limit is not None:
+            if limit < 0:
+                raise ValueError("limit must not be negative")
             candidates = candidates[:limit]
         result.candidates = candidates
         say(f"{len(candidates)} candidates after filtering")
@@ -307,6 +316,11 @@ def run_review(cfg: Config, *, days: int | None = None, since: datetime | None =
         recorded = 0
         try:
             run_dir = cfg.workspace / f"run_{run_id:05d}"
+            # Run ids restart at 1 with a fresh ledger, so a directory of this
+            # name can already exist and hold sheets built under looser privacy
+            # settings. Start clean rather than mixing two runs in one folder.
+            if run_dir.exists():
+                shutil.rmtree(run_dir, ignore_errors=True)
             export_dir = run_dir / "export"
             thumb_dir = run_dir / "thumbs"
             for d in (run_dir, export_dir, thumb_dir):
@@ -440,6 +454,15 @@ class _NullLedger:
 
     def record(self, **kwargs) -> str:
         return kwargs.get("status", "seen")
+
+    # Not reachable today, because run_review returns on dry_run before a run is
+    # started. Present so that a later reordering fails visibly rather than with
+    # an AttributeError halfway through a run.
+    def start_run(self, window=None, note=None) -> int:
+        return -1
+
+    def finish_run(self, run_id, examined=0, recorded=0, state="completed") -> None:
+        return None
 
 
 class DiskExhausted(RuntimeError):

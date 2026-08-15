@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.1.1 (2026-08-15)
+
+Fixes from an adversarial review of the 0.1.0 release. Four were confirmed by
+executing them, not by reading.
+
+- **Privacy:** a `NaN` geofence radius passed validation and then silently matched
+  nothing, because `distance <= nan` is always False. Non-finite coordinates and
+  radii are now rejected at load.
+- **Privacy:** album and zone exclusions are now evaluated before the screenshot
+  and size filters, so an excluded asset is always recorded as private rather than
+  being dropped for the wrong reason and losing that protection later.
+- **Privacy:** `.gitignore` media rules were case-sensitive, so `IMG_0001.JPG` was
+  not ignored on Linux and a later `git add .` could publish it.
+- **Safety:** `export_assets` refuses a symlinked target directory, which could
+  otherwise have had its contents deleted outside the workspace.
+- History screening no longer compares an asset against its own stored hash, which
+  could drop it and demote a `posted` status to `seen`.
+- `--limit 0` now means zero rather than unlimited.
+- A run directory left behind by a previous ledger is cleared rather than mixed in.
+- `_pick_export` no longer returns a video for a photo, or the reverse; that
+  mapping could not be consumed downstream and looked like a silent success.
+- `scan` no longer creates a ledger just to answer a question.
+- Documentation corrected: the package opens no sockets, but a Photos export can
+  make Photos itself download from iCloud; and `review` already records what it
+  showed you, so `mark` records why rather than being required for suppression.
+
 ## 0.1.0 (2026-08-15)
 
 First release.

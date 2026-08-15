@@ -190,31 +190,30 @@ class Ledger:
     def _write(self, cur, uuid, filename, cap, kind, status, hexed, note, destination,
                reason, now) -> str:
         """Row-level write. Caller owns the transaction."""
-        if True:
-            row = cur.execute("SELECT status FROM assets WHERE uuid = ?", (uuid,)).fetchone()
-            if row is None:
-                cur.execute(
-                    "INSERT INTO assets (uuid, filename, captured_at, kind, phash, status,"
-                    " note, destination, first_seen, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (uuid, filename, cap, kind, hexed, status, note, destination, now, now))
-                cur.execute(
-                    "INSERT INTO status_history (uuid, old_status, new_status, reason, changed_at)"
-                    " VALUES (?,?,?,?,?)", (uuid, None, status, reason, now))
-                return status
-
-            current = row["status"]
-            # Terminal states absorb automated writes. This is the privacy rule.
-            final = current if current in TERMINAL else status
+        row = cur.execute("SELECT status FROM assets WHERE uuid = ?", (uuid,)).fetchone()
+        if row is None:
             cur.execute(
-                "UPDATE assets SET filename=?, captured_at=?, kind=?, status=?,"
-                " phash=COALESCE(?, phash), note=COALESCE(?, note),"
-                " destination=COALESCE(?, destination), updated_at=? WHERE uuid=?",
-                (filename, cap, kind, final, hexed, note, destination, now, uuid))
-            if final != current:
-                cur.execute(
-                    "INSERT INTO status_history (uuid, old_status, new_status, reason, changed_at)"
-                    " VALUES (?,?,?,?,?)", (uuid, current, final, reason, now))
-            return final
+                "INSERT INTO assets (uuid, filename, captured_at, kind, phash, status,"
+                " note, destination, first_seen, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (uuid, filename, cap, kind, hexed, status, note, destination, now, now))
+            cur.execute(
+                "INSERT INTO status_history (uuid, old_status, new_status, reason, changed_at)"
+                " VALUES (?,?,?,?,?)", (uuid, None, status, reason, now))
+            return status
+
+        current = row["status"]
+        # Terminal states absorb automated writes. This is the privacy rule.
+        final = current if current in TERMINAL else status
+        cur.execute(
+            "UPDATE assets SET filename=?, captured_at=?, kind=?, status=?,"
+            " phash=COALESCE(?, phash), note=COALESCE(?, note),"
+            " destination=COALESCE(?, destination), updated_at=? WHERE uuid=?",
+            (filename, cap, kind, final, hexed, note, destination, now, uuid))
+        if final != current:
+            cur.execute(
+                "INSERT INTO status_history (uuid, old_status, new_status, reason, changed_at)"
+                " VALUES (?,?,?,?,?)", (uuid, current, final, reason, now))
+        return final
 
     def record_many(self, rows: Iterable[dict]) -> int:
         """Insert or update many assets in a single transaction.

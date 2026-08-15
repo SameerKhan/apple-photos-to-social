@@ -25,30 +25,27 @@ thumbs/
 sheets/
 manifest.csv
 
-*.jpg
-*.jpeg
-*.png
-*.heic
-*.HEIC
-*.mov
-*.MOV
-*.mp4
-*.m4v
-*.avi
-*.gif
-*.tif
-*.tiff
-*.webp
-*.bmp
-*.dng
-*.cr2
-*.CR2
-*.nef
-*.NEF
-*.arw
-*.ARW
-*.raf
-*.aae
+# Case-insensitive on purpose: a public clone on Linux is case-sensitive, so
+# `*.jpg` alone leaves IMG_0001.JPG unignored and a later `git add .` publishes it.
+*.[jJ][pP][gG]
+*.[jJ][pP][eE][gG]
+*.[pP][nN][gG]
+*.[hH][eE][iI][cCfF]
+*.[mM][oO][vV]
+*.[mM][pP]4
+*.[mM]4[vV]
+*.[aA][vV][iI]
+*.[gG][iI][fF]
+*.[tT][iI][fF]
+*.[tT][iI][fF][fF]
+*.[wW][eE][bB][pP]
+*.[bB][mM][pP]
+*.[dD][nN][gG]
+*.[cC][rR]2
+*.[nN][eE][fF]
+*.[aA][rR][wW]
+*.[rR][aA][fF]
+*.[aA][aA][eE]
 
 .env
 .env.*

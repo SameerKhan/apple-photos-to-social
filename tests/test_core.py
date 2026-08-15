@@ -386,10 +386,14 @@ def test_pick_export_prefers_the_matching_kind(tmp_path):
     assert ps._pick_export(files, want_video=True).suffix == ".mov"
 
 
-def test_pick_export_falls_back_when_kind_missing(tmp_path):
+def test_pick_export_refuses_the_wrong_kind(tmp_path):
+    # There is deliberately no cross-kind fallback: handing a .mov back for a
+    # still only moves the failure into Pillow, where it looks like a successful
+    # export that silently vanishes.
     (tmp_path / "only.mov").write_bytes(b"x")
     files = list(tmp_path.iterdir())
-    assert ps._pick_export(files, want_video=False).suffix == ".mov"
+    assert ps._pick_export(files, want_video=False) is None
+    assert ps._pick_export(files, want_video=True).suffix == ".mov"
     assert ps._pick_export([], want_video=False) is None
 
 
@@ -511,3 +515,70 @@ def test_config_rejects_bad_budget(tmp_path, key, value):
     p.write_text(f"[export]\n{key} = {value}\n")
     with pytest.raises(ValueError):
         load_config(p)
+
+
+# --------------------------------------------------------------------------
+# tri-review regressions (all four confirmed by execution before fixing)
+# --------------------------------------------------------------------------
+
+def test_nan_geofence_radius_is_rejected(tmp_path):
+    # REGRESSION: NaN passed `radius <= 0`, and `distance <= nan` is also False,
+    # so the zone silently matched nothing while privacy_configured stayed True.
+    p = tmp_path / "c.toml"
+    p.write_text('[[privacy.exclude_zones]]\nname="h"\nlatitude=1.0\nlongitude=1.0\n'
+                 'radius_m=nan\n')
+    with pytest.raises(ValueError):
+        load_config(p)
+
+
+def test_non_finite_coordinates_are_rejected(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text('[[privacy.exclude_zones]]\nname="h"\nlatitude=nan\nlongitude=1.0\n')
+    with pytest.raises(ValueError):
+        load_config(p)
+
+
+def test_private_album_wins_over_screenshot_filter(tmp_path, monkeypatch):
+    # REGRESSION: the screenshot check ran first, so a screenshot inside a private
+    # album was dropped as junk and never recorded private, losing that protection
+    # if the screenshot filter was later turned off.
+    monkeypatch.setattr(ps, "album_asset_ids",
+                        lambda names: ps.AlbumLookup(ids={"s/L0/001"}, missing=[]))
+    cfg = Config(exclude_albums=["Family"], exclude_screenshots=True)
+    with L.Ledger(tmp_path / "l.db") as led:
+        shot = _asset("s/L0/001", datetime.now(), name="Screenshot.PNG")
+        apply_filters([shot], cfg, led, ReviewResult(30, 1, 1))
+        rec = led.get("s/L0/001")
+        assert rec is not None and rec.status == L.EXCLUDED_PRIVATE
+
+
+def test_history_screening_ignores_the_assets_own_row(tmp_path):
+    # REGRESSION: with resurface_settled the asset is deliberately a candidate
+    # again, and matching it against its own stored hash both dropped it and
+    # rewrote posted down to seen.
+    from photos_to_posts.review import screen_against_history
+    with L.Ledger(tmp_path / "l.db") as led:
+        led.record(uuid="p/L0/001", filename="p.jpg", captured_at=datetime(2026, 1, 1),
+                   kind="photo", status=L.POSTED, phash=0xABCD)
+        frame = imaging.Frame(uuid="p/L0/001", path=tmp_path / "x.jpg", filename="p.jpg",
+                              captured_at=datetime(2026, 1, 1), phash=0xABCD)
+        kept = screen_against_history([frame], led, Config(resurface_settled=True),
+                                      ReviewResult(30, 1, 1),
+                                      {"p/L0/001": _asset("p/L0/001", datetime(2026, 1, 1))})
+        assert len(kept) == 1, "asset was screened out by its own history row"
+        assert led.get("p/L0/001").status == L.POSTED, "posted was demoted to seen"
+
+
+def test_export_refuses_a_symlinked_target(tmp_path):
+    # REGRESSION: mkdir(exist_ok=True) is satisfied by a symlink to a directory
+    # elsewhere, and the clearing loop would then empty that directory.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "precious.txt").write_text("do not delete me")
+    root = tmp_path / "export"
+    root.mkdir()
+    uid = "abc/L0/001"
+    (root / ps.uuid_to_dirname(uid)).symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ps.PhotosError):
+        ps.export_assets([uid], root)
+    assert (outside / "precious.txt").exists(), "files outside the workspace were deleted"

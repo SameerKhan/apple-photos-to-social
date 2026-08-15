@@ -9,6 +9,7 @@ coordinates, brand guides and channel ids stay on your machine.
 """
 from __future__ import annotations
 
+import math
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -127,11 +128,19 @@ def load_config(path: str | Path | None = None) -> Config:
         privacy.get("require_location_for_zones", cfg.require_location_for_zones))
     for z in privacy.get("exclude_zones", []) or []:
         lat, lon = float(z["latitude"]), float(z["longitude"])
+        # isfinite before the range test: NaN fails every comparison, so a NaN
+        # would slip past `-90 <= lat <= 90` being False only by luck, and a NaN
+        # radius passes `radius <= 0` outright and then silently disables the
+        # zone, because `distance <= nan` is also False. A privacy filter that
+        # quietly matches nothing is worse than no filter at all.
+        if not (math.isfinite(lat) and math.isfinite(lon)):
+            raise ValueError(f"privacy.exclude_zones: coordinates must be finite: {lat},{lon}")
         if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
             raise ValueError(f"privacy.exclude_zones: coordinates out of range: {lat},{lon}")
         radius = float(z.get("radius_m", 250.0))
-        if radius <= 0:
-            raise ValueError(f"privacy.exclude_zones: radius_m must be positive, got {radius}")
+        if not math.isfinite(radius) or radius <= 0:
+            raise ValueError(f"privacy.exclude_zones: radius_m must be finite and positive, "
+                             f"got {radius}")
         cfg.exclude_zones.append(Zone(name=str(z.get("name", "zone")), latitude=lat,
                                       longitude=lon, radius_m=radius))
 

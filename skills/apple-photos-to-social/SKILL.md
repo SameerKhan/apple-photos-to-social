@@ -77,8 +77,10 @@ photos2social mark <uuid> shortlisted
 ```
 
 Get the uuid from `manifest.csv` in the run directory, which maps sheet index to
-asset id. **This step is what makes the next run useful.** Skip it and the same
-photos come back.
+asset id. `review` has already recorded everything it showed you as `seen`, so
+these photos will not come back either way. Marking records *why*, which is what
+makes `stats`, `coverage` and the posted history meaningful, and it is the only
+way to make an exclusion permanent.
 
 ## Publishing
 

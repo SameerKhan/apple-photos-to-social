@@ -362,14 +362,15 @@ def _pick_export(files: Sequence[Path], want_video: bool) -> Path | None:
         return None
     images = [f for f in files if f.suffix.lower() in IMAGE_EXT]
     videos = [f for f in files if f.suffix.lower() in {".mov", ".mp4", ".m4v"}]
-    preferred = videos if want_video else images
-    fallback = images if want_video else videos
-    for group in (preferred, fallback, list(files)):
-        if group:
-            # Largest wins within a group: for RAW+JPEG the bigger file is the
-            # full-quality one, and for stills it is never the sidecar.
-            return max(group, key=lambda p: p.stat().st_size)
-    return None
+    # No cross-kind fallback: handing a .mov back for a still just moves the
+    # failure downstream into Pillow, where it looks like a successful export
+    # that mysteriously vanishes. Returning None reports it as a real failure.
+    group = videos if want_video else images
+    if not group:
+        return None
+    # Largest wins within a group: for RAW+JPEG the bigger file is the
+    # full-quality one, and for stills it is never the sidecar.
+    return max(group, key=lambda p: p.stat().st_size)
 
 
 def export_assets(uuids: Iterable[str], dest_root: str | Path, *, originals: bool = False,
@@ -398,6 +399,10 @@ def export_assets(uuids: Iterable[str], dest_root: str | Path, *, originals: boo
 
     for i, uid in enumerate(ids, 1):
         target = root / uuid_to_dirname(uid)
+        # mkdir(exist_ok=True) is satisfied by a symlink pointing at a directory
+        # elsewhere, and the clearing loop below would then empty that directory.
+        if target.is_symlink():
+            raise PhotosError(f"refusing to export into a symlinked path: {target}")
         target.mkdir(parents=True, exist_ok=True, mode=0o700)
         # A pre-existing file would make Photos add a numeric suffix, so the
         # directory is emptied completely first and stays single-occupancy.

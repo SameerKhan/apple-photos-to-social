@@ -81,7 +81,10 @@ instruments, not a guarantee.
 
 ### What leaves your machine
 
-Nothing, from this package. It makes no network calls at all.
+This package opens no network connections of its own. One indirect exception is
+worth naming: asking Photos to export an asset can make *Photos* download the
+original from iCloud, if your library is set to optimise storage. That traffic is
+Apple's, between your Mac and your own iCloud account, but it is not nothing.
 
 Exported photos, thumbnails and contact sheets are written to a local workspace with
 owner-only permissions. If you then hand those files to an AI assistant or upload
@@ -164,7 +167,9 @@ A `SKILL.md` for Claude Code is included in `skills/`.
 
 The unit suite runs anywhere and never touches a real library: date parsing in both
 locale orders, AppleScript escaping and id validation, perceptual hashing, burst
-clustering, the full ledger state machine, geofence maths, and config validation.
+clustering, the ledger status rules and hash storage, geofence maths, export file
+selection, and config validation. The end-to-end pipeline against a real library is
+not unit tested; see `docs/manual-testing.md`.
 
 ```bash
 pip install -e ".[dev]" && pytest

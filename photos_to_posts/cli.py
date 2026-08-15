@@ -133,8 +133,13 @@ def cmd_scan(args) -> int:
     assets = ps.fetch_all_assets()
     window = select_window(assets, days=args.days or cfg.default_days,
                            since=_iso(args.since), until=_iso(args.until))
-    with Ledger(cfg.ledger_path) as ledger:
-        settled = ledger.settled_uuids(include_seen=not cfg.resurface_seen)
+    # Read-only command: if no ledger exists yet, do not bring one into being
+    # just to answer a question.
+    if Path(cfg.ledger_path).expanduser().exists():
+        with Ledger(cfg.ledger_path) as ledger:
+            settled = ledger.settled_uuids(include_seen=not cfg.resurface_seen)
+    else:
+        settled = set()
 
     fresh = [a for a in window if a.uuid not in settled]
     photos = sum(1 for a in fresh if a.kind == "photo")
