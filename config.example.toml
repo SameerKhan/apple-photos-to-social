@@ -25,6 +25,10 @@ burst_max_gap_seconds = 180
 resurface_seen = false
 # Show everything, including posted and excluded assets. For debugging.
 resurface_settled = false
+# Set true to skip the refusal when no privacy filters are configured. Only sensible
+# if you are reviewing your OWN library and accept that everything in the window,
+# family included, becomes a candidate that a human or a model will look at.
+# allow_unfiltered = false
 # How close a candidate must look to something already in the ledger before it is
 # treated as already seen. Tighter than burst_max_distance on purpose: a false
 # positive here hides a photo you never reviewed.

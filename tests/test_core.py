@@ -582,3 +582,20 @@ def test_export_refuses_a_symlinked_target(tmp_path):
     with pytest.raises(ps.PhotosError):
         ps.export_assets([uid], root)
     assert (outside / "precious.txt").exists(), "files outside the workspace were deleted"
+
+
+def test_allow_unfiltered_config_key_permits_the_run(tmp_path):
+    cfg = Config(allow_unfiltered=True)
+    assert not cfg.privacy_configured
+    with L.Ledger(tmp_path / "l.db") as led:
+        out = apply_filters([_asset("a/L0/001", datetime.now())], cfg, led,
+                            ReviewResult(30, 1, 1))
+        assert len(out) == 1
+
+
+def test_allow_unfiltered_defaults_off(tmp_path):
+    # A fresh install must still fail closed.
+    with L.Ledger(tmp_path / "l.db") as led:
+        with pytest.raises(PrivacyRefusal):
+            apply_filters([_asset("a/L0/001", datetime.now())], Config(), led,
+                          ReviewResult(30, 1, 1))

@@ -116,7 +116,7 @@ def apply_filters(assets: Sequence[ps.Asset], cfg: Config, ledger: Ledger,
     or when no filter is configured at all and the caller has not explicitly
     accepted that.
     """
-    if not cfg.privacy_configured and not allow_unfiltered:
+    if not cfg.privacy_configured and not (allow_unfiltered or cfg.allow_unfiltered):
         raise PrivacyRefusal(
             "No privacy filters are configured, so every photo in the window would be "
             "exported and shown to a model, including photos of family. Configure "

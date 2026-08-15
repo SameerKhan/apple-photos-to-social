@@ -42,6 +42,10 @@ class Config:
     burst_max_distance: int = 12
     burst_max_gap_seconds: int = 180
     resurface_settled: bool = False
+    # Opt out of the no-filters refusal permanently, for someone reviewing their
+    # own library who accepts that everything in a window becomes a candidate.
+    # Defaults to False so a fresh install always fails closed.
+    allow_unfiltered: bool = False
     # When False, an asset reviewed and not chosen stays suppressed on later runs.
     # That is the whole point of the ledger, so it defaults to False.
     resurface_seen: bool = False
@@ -119,6 +123,7 @@ def load_config(path: str | Path | None = None) -> Config:
         review.get("burst_max_gap_seconds", cfg.burst_max_gap_seconds))
     cfg.resurface_settled = bool(review.get("resurface_settled", cfg.resurface_settled))
     cfg.resurface_seen = bool(review.get("resurface_seen", cfg.resurface_seen))
+    cfg.allow_unfiltered = bool(review.get("allow_unfiltered", cfg.allow_unfiltered))
     cfg.history_max_distance = int(review.get("history_max_distance", cfg.history_max_distance))
 
     privacy = raw.get("privacy", {})

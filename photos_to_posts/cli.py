@@ -115,8 +115,12 @@ def cmd_doctor(args) -> int:
               f"{len(cfg.exclude_zones)} zone(s)")
     else:
         print("privacy filters : NONE CONFIGURED")
-        print("                  Every photo in a window would become a candidate,")
-        print("                  including photos of family. See config.example.toml.")
+        if cfg.allow_unfiltered:
+            print("                  allow_unfiltered = true in config, so review WILL run")
+            print("                  and every photo in a window becomes a candidate.")
+        else:
+            print("                  Every photo in a window would become a candidate,")
+            print("                  including photos of family. See config.example.toml.")
     return 0 if ok else 1
 
 
