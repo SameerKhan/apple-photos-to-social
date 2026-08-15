@@ -687,7 +687,10 @@ def test_diagnose_flags_a_blown_image(tmp_path):
         pytest.skip("numpy not installed")
     d = quality.diagnose(_solid(tmp_path, "white.jpg", (254, 254, 254)))
     assert "blown_highlights" in d.faults
-    assert "blown_highlights" in d.auto_fixable
+    # Detected, but NOT auto-repaired: clipped pixels hold nothing to recover, so the
+    # only available "fix" is darkening white to grey, which is worse.
+    assert "blown_highlights" not in d.auto_fixable
+    assert "blown_highlights" in d.needs_judgement
 
 
 def test_diagnose_separates_intent_from_defect(tmp_path):
@@ -742,13 +745,17 @@ def test_colour_cast_ignores_a_coloured_subject(tmp_path):
     assert "colour_cast" not in d.faults, f"false cast: {d.cast:.0f}%"
 
 
-def test_unusable_blur_is_reported_not_repaired(tmp_path):
+def test_low_detail_is_reported_not_repaired(tmp_path):
+    # Renamed from "unfixable blur": Laplacian variance measures DETAIL, and a sharp
+    # photo of a plain wall scores as low as a smeared one. The label must not claim
+    # more than the measurement supports.
     from photos_to_posts import quality
     if not quality.available():
         pytest.skip("numpy not installed")
     d = quality.diagnose(_solid(tmp_path, "flat.jpg", (120, 120, 120)))
-    assert d.unusable  # a featureless frame has no high-frequency detail
-    assert "unfixable_blur" not in d.auto_fixable
+    assert d.low_detail
+    assert "low_detail" in quality.NEEDS_JUDGEMENT
+    assert "low_detail" not in d.auto_fixable
 
 
 def test_diagnosis_summary_is_human_readable(tmp_path):
@@ -758,3 +765,120 @@ def test_diagnosis_summary_is_human_readable(tmp_path):
     d = quality.diagnose(_solid(tmp_path, "w.jpg", (254, 254, 254)))
     s = d.summary()
     assert "auto:" in s or "your call:" in s
+
+
+def test_tiny_images_do_not_produce_nan_sharpness(tmp_path):
+    # REGRESSION: a 1x1 or 2x2 image leaves an empty Laplacian interior, and var() on
+    # an empty slice is NaN. NaN fails every comparison, so the image was silently
+    # classified as perfectly sharp instead of unmeasurable.
+    from photos_to_posts import quality
+    if not quality.available():
+        pytest.skip("numpy not installed")
+    import math
+    for size in ((1, 1), (2, 2), (1, 500)):
+        p = tmp_path / f"tiny_{size[0]}x{size[1]}.jpg"
+        Image.new("RGB", size, (90, 90, 90)).save(p)
+        d = quality.diagnose(p)
+        assert d is not None
+        assert math.isnan(d.sharpness), "expected the measure to be declined"
+        assert "soft" not in d.faults and "unfixable_blur" not in d.faults, \
+            "an unmeasurable image must not be classified either way"
+
+
+@pytest.mark.parametrize("mode,ext", [("L", "png"), ("RGBA", "png"),
+                                      ("CMYK", "jpg"), ("P", "png")])
+def test_diagnose_handles_other_colour_modes(tmp_path, mode, ext):
+    # A camera roll is not all RGB JPEGs: screenshots arrive as RGBA PNGs, scans can be
+    # greyscale, and a stray CMYK file should be measured rather than crash the run.
+    from photos_to_posts import quality
+    if not quality.available():
+        pytest.skip("numpy not installed")
+    p = tmp_path / f"m{mode}.{ext}"
+    Image.new("RGB", (200, 200), (90, 100, 110)).convert(mode).save(p)
+    d = quality.diagnose(p)
+    assert d is not None and d.width == 200
+
+
+
+def test_repair_refuses_when_judgement_and_autofix_coexist(tmp_path):
+    # REGRESSION, and the most important test here. A low-key silhouette with a small
+    # patch of blown sky carries BOTH a judgement fault and a repairable one. The old
+    # code repaired it because it only checked whether any auto-fixable fault existed.
+    from photos_to_posts import quality
+    if not quality.available():
+        pytest.skip("numpy not installed")
+    import numpy as np
+    a = np.zeros((400, 300, 3), dtype=np.uint8)
+    a[:40] = 255                                  # blown sky
+    a[300:, :] = (150, 60, 40)                    # a warm cast in the foreground
+    p = tmp_path / "silhouette.jpg"
+    Image.fromarray(a).save(p, quality=95)
+    d = quality.diagnose(p)
+    assert d.needs_judgement, "expected the dark frame to need judgement"
+    assert quality.repair(d, tmp_path / "out.jpg") is None, \
+        "a photo needing judgement was modified because it also had a fixable fault"
+    assert not (tmp_path / "out.jpg").exists()
+
+
+def test_repair_has_no_override_flag():
+    # An escape hatch on a safety guarantee is not a guarantee. sharpen_soft was one.
+    import inspect
+    from photos_to_posts import quality
+    params = inspect.signature(quality.repair).parameters
+    assert set(params) == {"diagnosis", "dst"}, f"unexpected parameters: {list(params)}"
+
+
+def test_blown_highlights_are_reported_not_repaired(tmp_path):
+    # Clipped pixels hold no recoverable data, so darkening them to grey is a
+    # downgrade, not a repair.
+    from photos_to_posts import quality
+    if not quality.available():
+        pytest.skip("numpy not installed")
+    assert "blown_highlights" in quality.NEEDS_JUDGEMENT
+    assert "blown_highlights" not in quality.AUTO_FIXABLE
+
+
+def test_repair_preserves_alpha_and_mode(tmp_path):
+    from photos_to_posts import quality
+    if not quality.available():
+        pytest.skip("numpy not installed")
+    import numpy as np
+    a = np.full((200, 200, 4), 120, dtype=np.uint8)
+    a[..., 0] = 190          # a red cast on otherwise neutral pixels
+    a[..., 3] = 128          # semi transparent
+    p = tmp_path / "t.png"
+    Image.fromarray(a, "RGBA").save(p)
+    d = quality.diagnose(p)
+    if not d.auto_fixable or d.needs_judgement:
+        pytest.skip("synthetic image did not land in the auto-fix class")
+    out = quality.repair(d, tmp_path / "o.png")
+    with Image.open(out) as im:
+        assert im.mode == "RGBA", "transparency was flattened"
+
+
+def test_linkedin_ratio_floor_is_four_fifths():
+    # REGRESSION: the floor was 0.33, so a 0.668 phone portrait was reported as
+    # fitting LinkedIn. LinkedIn documents 4:5 through 3:1 for organic photos.
+    assert imaging.PLATFORM_RATIOS["linkedin"][0] == 0.80
+    assert imaging.platform_fit(1080, 1616)["linkedin"] is False
+    assert imaging.platform_fit(1080, 1350)["linkedin"] is True
+
+
+def test_face_placement_actually_moves_the_crop(tmp_path, monkeypatch):
+    # REGRESSION: the old test asserted only output dimensions, so it passed even if
+    # the focus point were ignored entirely. Compare pixels instead.
+    from photos_to_posts import faces as faces_mod
+    import numpy as np
+    a = np.zeros((1616, 1080, 3), dtype=np.uint8)
+    for y in range(1616):
+        a[y, :, :] = y % 256                      # a vertical gradient, so position shows
+    src = tmp_path / "grad.jpg"
+    Image.fromarray(a).save(src, quality=95)
+
+    monkeypatch.setattr(faces_mod, "focus_point", lambda p: 0.20)
+    high = imaging.crop_to_ratio(src, tmp_path / "high.jpg")
+    monkeypatch.setattr(faces_mod, "focus_point", lambda p: 0.75)
+    low = imaging.crop_to_ratio(src, tmp_path / "low.jpg")
+    with Image.open(high) as a1, Image.open(low) as a2:
+        assert np.asarray(a1).mean() != np.asarray(a2).mean(), \
+            "focus point did not change which pixels were kept"

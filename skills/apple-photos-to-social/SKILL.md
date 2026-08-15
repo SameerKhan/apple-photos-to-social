@@ -56,7 +56,9 @@ extracted before anything can be judged, which is slower.
 - **`your call:`** reported and deliberately NOT touched (underexposure, crushed
   shadows, softness), because those are frequently the intent rather than a mistake.
   Look at the picture and decide. A low-key silhouette measures as underexposed.
-- **`UNUSABLE`** severe motion blur. Discard it, do not try to sharpen it.
+- **`very low detail`** little high-frequency content. This measures DETAIL, not
+  blur, so a sharp photo of a plain wall scores the same as a smeared one. Look
+  at it before deciding; never auto-discard on this alone.
 
 ### 3. Look at the contact sheets
 

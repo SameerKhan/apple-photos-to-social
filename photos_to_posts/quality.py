@@ -33,15 +33,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from PIL import Image, ImageFilter
+from PIL import Image
 
 __all__ = ["Diagnosis", "available", "diagnose", "repair", "AUTO_FIXABLE", "NEEDS_JUDGEMENT"]
 
-# Faults with no plausible artistic reading. Repaired automatically.
-AUTO_FIXABLE = ("blown_highlights", "face_underexposed", "colour_cast")
+# Faults with no plausible artistic reading AND a repair that genuinely helps.
+#
+# blown_highlights is deliberately NOT here. Clipped pixels contain no recoverable
+# data, so "repairing" them only darkens pure white to flat grey, which looks worse
+# than the clipping did. It is reported instead.
+AUTO_FIXABLE = ("face_underexposed", "colour_cast")
 
-# Faults that are frequently the photographer's intent. Reported, never touched.
-NEEDS_JUDGEMENT = ("underexposed", "overexposed", "crushed_shadows", "soft", "flat")
+# Faults that are frequently the photographer's intent, or that cannot be repaired.
+# Reported, never touched.
+NEEDS_JUDGEMENT = ("underexposed", "overexposed", "crushed_shadows", "soft", "flat",
+                   "blown_highlights", "low_detail")
 
 
 def available() -> bool:
@@ -77,9 +83,15 @@ class Diagnosis:
         return [f for f in self.faults if f in NEEDS_JUDGEMENT]
 
     @property
-    def unusable(self) -> bool:
-        """Motion blur this severe cannot be sharpened. Discard rather than edit."""
-        return "unfixable_blur" in self.faults
+    def low_detail(self) -> bool:
+        """Very little high-frequency content.
+
+        Deliberately NOT called "motion blurred". Laplacian variance measures detail,
+        and a genuinely sharp photograph of a plain wall scores just as low as a
+        smeared one. Treat it as "look at this before using it", never as an
+        instruction to discard.
+        """
+        return "low_detail" in self.faults
 
     def summary(self) -> str:
         if not self.faults:
@@ -89,8 +101,8 @@ class Diagnosis:
             parts.append("auto: " + ", ".join(self.auto_fixable))
         if self.needs_judgement:
             parts.append("your call: " + ", ".join(self.needs_judgement))
-        if self.unusable:
-            parts.append("UNUSABLE, motion blurred")
+        if self.low_detail:
+            parts.append("very low detail, check it is not blurred")
         return " | ".join(parts)
 
 
@@ -145,9 +157,15 @@ def diagnose(path: str | Path, face_box: tuple[float, float, float, float] | Non
     d.highlight_clip = float(hist[252:].sum() / total * 100)
 
     # Laplacian variance on full resolution. Downscaling destroys the signal.
-    k = lum.astype(np.float32)
-    lap = -4 * k[1:-1, 1:-1] + k[:-2, 1:-1] + k[2:, 1:-1] + k[1:-1, :-2] + k[1:-1, 2:]
-    d.sharpness = float(lap.var())
+    # An image under 3px in either axis leaves an empty interior, and var() on an
+    # empty slice returns NaN. NaN then fails every comparison silently, so such an
+    # image would be treated as perfectly sharp. Skip the measure instead.
+    if h >= 3 and w >= 3:
+        k = lum.astype(np.float32)
+        lap = -4 * k[1:-1, 1:-1] + k[:-2, 1:-1] + k[2:, 1:-1] + k[1:-1, :-2] + k[1:-1, 2:]
+        d.sharpness = float(lap.var()) if lap.size else float("nan")
+    else:
+        d.sharpness = float("nan")
 
     flat = arr.reshape(-1, 3)
     sel = _neutral_mask(flat, np)
@@ -179,40 +197,46 @@ def diagnose(path: str | Path, face_box: tuple[float, float, float, float] | Non
         d.faults.append("crushed_shadows")
     if d.dynamic_range < 150:
         d.faults.append("flat")
-    if d.sharpness < 20:
-        d.faults.append("unfixable_blur")
-    elif d.sharpness < 60:
-        d.faults.append("soft")
+    # NaN means the measure could not be taken, not that the image is sharp.
+    if d.sharpness == d.sharpness:      # False only for NaN
+        if d.sharpness < 20:
+            d.faults.append("low_detail")
+        elif d.sharpness < 60:
+            d.faults.append("soft")
     return d
 
 
-def repair(diagnosis: Diagnosis, dst: str | Path, *, sharpen_soft: bool = False) -> Path | None:
-    """Repair only the unambiguous faults. Returns None if there was nothing to do.
+def repair(diagnosis: Diagnosis, dst: str | Path) -> Path | None:
+    """Repair the unambiguous faults, or refuse. Returns None when nothing was done.
 
-    ``sharpen_soft`` is off by default: softness is frequently shallow depth of field
-    rather than a mistake, and an unsharp mask on intentional bokeh looks worse than
-    leaving it alone.
+    **This refuses outright if the image carries ANY fault needing judgement**, even
+    alongside a repairable one. A low-key silhouette with a small patch of blown sky
+    has both, and touching it at all is the failure this module exists to prevent.
+    Mixed cases go to a human, whole.
+
+    There is no override flag. An escape hatch on a safety guarantee is not a
+    guarantee, and the previous ``sharpen_soft`` parameter was exactly that.
     """
     try:
         import numpy as np
     except ImportError:
         return None
 
+    if diagnosis.needs_judgement:
+        return None
     todo = diagnosis.auto_fixable
-    if sharpen_soft and "soft" in diagnosis.faults:
-        todo = todo + ["soft"]
     if not todo:
         return None
 
     dst = Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
     with Image.open(diagnosis.path) as im:
+        original_mode = im.mode
+        exif = im.info.get("exif")
+        # Alpha is carried through rather than flattened: a screenshot with
+        # transparency must not come back opaque.
+        alpha = im.getchannel("A") if original_mode in ("RGBA", "LA") else None
         arr = np.asarray(im.convert("RGB"), dtype=np.float32)
-
-    if "blown_highlights" in todo:
-        x = arr / 255.0
-        m = np.clip((x.mean(axis=2, keepdims=True) - 0.75) * 4, 0, 1)
-        arr = np.clip(x * (1 - m * 0.25) * 255, 0, 255)
 
     if "face_underexposed" in todo:
         # Lift shadows, which is where an underexposed face lives, without flattening
@@ -233,7 +257,10 @@ def repair(diagnosis: Diagnosis, dst: str | Path, *, sharpen_soft: bool = False)
             arr = np.clip(arr * gain, 0, 255)
 
     out = Image.fromarray(arr.astype("uint8"))
-    if "soft" in todo:
-        out = out.filter(ImageFilter.UnsharpMask(radius=1.4, percent=85, threshold=3))
-    out.save(dst, quality=95)
+    if alpha is not None:
+        out.putalpha(alpha)
+    save_kwargs = {"quality": 95}
+    if exif:
+        save_kwargs["exif"] = exif      # keeps orientation and capture metadata
+    out.save(dst, **save_kwargs)
     return dst

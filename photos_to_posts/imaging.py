@@ -166,7 +166,7 @@ PLATFORM_RATIOS = {
     "instagram": (0.75, 1.91),   # 4:5 to 1.91:1
     "facebook": (0.30, 3.00),
     "x": (0.33, 3.00),
-    "linkedin": (0.33, 3.00),
+    "linkedin": (0.80, 3.00),    # LinkedIn documents 4:5 through 3:1 for organic photos
 }
 
 

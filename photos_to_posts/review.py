@@ -47,7 +47,7 @@ class ReviewResult:
     skipped_not_allowlisted: int = 0
     auto_repaired: int = 0
     needs_judgement: int = 0
-    unusable: int = 0
+    low_detail: int = 0
     skipped_seen_before_visually: int = 0
     videos_deferred: int = 0
     exported: int = 0
@@ -77,7 +77,7 @@ class ReviewResult:
             "location unknown": self.skipped_unknown_location,
             "not in allowlist": self.skipped_not_allowlisted,
             "auto-repaired": self.auto_repaired,
-            "unusable (motion blur)": self.unusable,
+            "very low detail": self.low_detail,
             "videos deferred": self.videos_deferred,
             "export failed": self.export_failures,
         }
@@ -374,19 +374,30 @@ def run_review(cfg: Config, *, days: int | None = None, since: datetime | None =
                 # Diagnose the exported pixels, and repair ONLY faults that have no
                 # plausible artistic reading. See quality.py for why the rest is left
                 # for a human: a measurement cannot tell a mistake from an intention.
-                diag = quality.diagnose(src, face_box=_face_box(src))
+                # Contained per image: a single unreadable file, a MemoryError on a
+                # 48 MP frame, or a failed write must not abandon the whole run.
+                try:
+                    diag = quality.diagnose(src, face_box=_face_box(src))
+                except Exception:
+                    diag = None
                 if diag is not None:
                     diagnoses[a.uuid] = diag
-                    if diag.unusable:
-                        result.unusable += 1
-                    if diag.auto_fixable:
-                        repaired = quality.repair(diag, repair_dir / src.name)
+                    if diag.low_detail:
+                        result.low_detail += 1
+                    if diag.needs_judgement:
+                        result.needs_judgement += 1
+                    elif diag.auto_fixable:
+                        # Named by uuid, not source filename: duplicate camera
+                        # filenames are common and would overwrite each other.
+                        target = repair_dir / f"{ps.uuid_to_dirname(a.uuid)}{src.suffix}"
+                        try:
+                            repaired = quality.repair(diag, target)
+                        except Exception:
+                            repaired = None
                         if repaired is not None:
                             _harden(repaired, 0o600)
                             repairs[a.uuid] = repaired
                             result.auto_repaired += 1
-                    if diag.needs_judgement:
-                        result.needs_judgement += 1
                 frames.append(imaging.Frame(uuid=a.uuid, path=thumb, filename=a.filename,
                                             captured_at=a.captured_at, phash=h))
             result.exported = len(frames)
@@ -552,8 +563,14 @@ def _write_manifest(run_dir: Path, frames: Sequence[imaging.Frame],
                     fit = imaging.platform_fit(*im.size)
                     ratio = f"{im.size[0] / im.size[1]:.3f}"
                     # Only the platforms that will REJECT it are worth writing down.
+                    r = im.size[0] / im.size[1]
                     bad = [k for k, ok in fit.items() if not ok]
-                    fits = "ok" if not bad else "too tall for " + "/".join(sorted(bad))
+                    if not bad:
+                        fits = "ok"
+                    else:
+                        lo = imaging.PLATFORM_RATIOS[bad[0]][0]
+                        how = "too tall" if r < lo else "too wide"
+                        fits = f"{how} for " + "/".join(sorted(bad))
             except OSError:
                 pass
             d = (diagnoses or {}).get(f.uuid)

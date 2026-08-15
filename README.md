@@ -112,8 +112,8 @@ uv run --with Pillow python -m photos_to_posts.cli doctor
 `doctor` reports whether Photos is reachable, whether Pillow and ffmpeg are present,
 how much disk is free, and whether privacy filters are configured. Run it first.
 
-Requires Python 3.11+ and macOS. Pillow is the only runtime dependency. ffmpeg is
-optional and only needed to review videos.
+Requires Python 3.11+ and macOS. Runtime dependencies are Pillow and numpy. ffmpeg is
+optional and needed only to review videos, and PyObjC only for face-aware cropping.
 
 ## Use
 
@@ -217,11 +217,17 @@ Every exported image is measured: exposure, dynamic range, shadow and highlight
 clipping, colour cast, sharpness, and face-region exposure specifically. Faults land
 in one of two buckets, and the split is the whole design:
 
-**Auto-repaired**, because no plausible artistic reading exists:
-blown highlights, a face too dark to read, a strong colour cast on neutral surfaces.
+**Auto-repaired**, because no plausible artistic reading exists AND a repair genuinely
+helps: a face too dark to read, a strong colour cast on neutral surfaces.
 
-**Reported and left alone**, because the "fault" is frequently the intent:
-overall underexposure, crushed shadows, softness.
+**Reported and left alone**: overall underexposure, crushed shadows, softness, and
+blown highlights. The first three are frequently the intent. Blown highlights are
+simply unrecoverable, since clipped pixels hold no data, and the only available
+"repair" is darkening white to grey.
+
+**An image carrying ANY judgement fault is never touched, even if it also has a
+repairable one.** A low-key silhouette with a patch of blown sky has both, and
+half-editing it is the failure this whole design exists to prevent.
 
 There is a specific photograph behind that rule. A dawn shot of a jetty measured 14.5%
 crushed shadows. Every metric called it underexposed. It was a deliberate low-key

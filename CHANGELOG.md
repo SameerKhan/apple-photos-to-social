@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.2.1 (2026-08-16)
+
+Hardening after adversarial review of 0.2.0.
+
+- **The safety guarantee is now actually enforced.** `repair()` refuses outright if an
+  image carries any judgement fault, even alongside a repairable one. Previously a
+  low-key silhouette with a patch of blown sky would have been edited.
+- **Removed the `sharpen_soft` override.** An escape hatch on a safety guarantee is
+  not a guarantee.
+- **Blown highlights are no longer auto-repaired.** Clipped pixels hold nothing to
+  recover; the operation only turned white into flat grey. Reported instead.
+- **`unfixable_blur` renamed `low_detail`** and no longer described as motion blur.
+  Laplacian variance measures detail, and a sharp photo of a plain wall scores just as
+  low as a smeared one.
+- Repairs preserve alpha, colour mode and EXIF, and are named by asset id so duplicate
+  camera filenames cannot overwrite each other.
+- Diagnosis and repair failures are contained per image instead of failing the run.
+- Images under 3px no longer produce a NaN sharpness that silently read as sharp.
+- LinkedIn's aspect floor corrected from 0.33 to 0.80 (4:5), so a phone portrait is no
+  longer reported as fitting. Manifest now says "too wide" where that is what happened.
+
 ## 0.2.0 (2026-08-16)
 
 - **Per-image quality diagnosis** (`quality.py`, `photos2social diagnose`): exposure,
