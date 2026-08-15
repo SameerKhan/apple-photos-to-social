@@ -599,3 +599,29 @@ def test_allow_unfiltered_defaults_off(tmp_path):
         with pytest.raises(PrivacyRefusal):
             apply_filters([_asset("a/L0/001", datetime.now())], Config(), led,
                           ReviewResult(30, 1, 1))
+
+
+def test_platform_fit_flags_a_too_tall_phone_photo():
+    # REGRESSION: a 1080x1616 studio portrait (0.668) was scheduled to Instagram and
+    # rejected with "aspect ratio between 3:4 and 1.91:1". Nothing had checked.
+    fit = imaging.platform_fit(1080, 1616)
+    assert fit["instagram"] is False
+    assert fit["facebook"] is True and fit["x"] is True
+    assert imaging.platform_fit(1080, 1350)["instagram"] is True   # 4:5
+    assert imaging.platform_fit(1080, 1080)["instagram"] is True   # square
+    assert imaging.platform_fit(0, 0)["instagram"] is False
+
+
+def test_crop_to_ratio_hits_4_5_and_keeps_the_top(tmp_path):
+    src = tmp_path / "tall.jpg"
+    Image.new("RGB", (1080, 1616), (30, 60, 90)).save(src)
+    out = imaging.crop_to_ratio(src, tmp_path / "out.jpg")
+    with Image.open(out) as im:
+        w, h = im.size
+        assert (w, h) == (1080, 1350)
+        assert abs(w / h - 0.8) < 0.001
+    # an already-wide image is passed through untouched
+    wide = tmp_path / "wide.jpg"
+    Image.new("RGB", (1600, 900), (0, 0, 0)).save(wide)
+    with Image.open(imaging.crop_to_ratio(wide, tmp_path / "w2.jpg")) as im:
+        assert im.size == (1600, 900)

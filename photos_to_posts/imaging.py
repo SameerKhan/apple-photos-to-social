@@ -158,6 +158,48 @@ def contact_sheets(frames: Sequence[Frame], out_dir: str | Path, *,
     return written
 
 
+# Aspect-ratio windows each platform will accept for a feed image, as width/height.
+# Instagram is by far the tightest, and a phone photo straight out of the camera roll
+# is usually too tall for it: a 3:2 portrait is 0.667 against a 0.75 floor. Catching
+# that here is much cheaper than having a scheduler reject the post later.
+PLATFORM_RATIOS = {
+    "instagram": (0.75, 1.91),   # 4:5 to 1.91:1
+    "facebook": (0.30, 3.00),
+    "x": (0.33, 3.00),
+    "linkedin": (0.33, 3.00),
+}
+
+
+def platform_fit(width: int, height: int) -> dict[str, bool]:
+    """Which platforms will accept this image as a feed post, by aspect ratio alone."""
+    if not width or not height:
+        return {k: False for k in PLATFORM_RATIOS}
+    r = width / height
+    return {name: lo <= r <= hi for name, (lo, hi) in PLATFORM_RATIOS.items()}
+
+
+def crop_to_ratio(src: str | Path, dst: str | Path, ratio: float = 0.8,
+                  top_share: float = 0.30) -> Path:
+    """Crop to a target width/height ratio, trimming mostly from the bottom.
+
+    ``top_share`` biases the crop because a centre crop on a standing portrait is as
+    likely to take the top of someone's head as it is to take the floor. 0.8 (4:5) is
+    Instagram's portrait sweet spot and the tallest it accepts.
+    """
+    dst = Path(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    with Image.open(src) as im:
+        im = im.convert("RGB")
+        w, h = im.size
+        if w / h >= ratio:
+            im.save(dst, quality=94)   # already wide enough
+            return dst
+        new_h = int(round(w / ratio))
+        top = int(round((h - new_h) * top_share))
+        im.crop((0, top, w, top + new_h)).save(dst, quality=94)
+    return dst
+
+
 def downscale(src: str | Path, dst: str | Path, max_edge: int = 900) -> Path:
     """Write a smaller copy, preserving aspect. Used to keep sheets cheap to build."""
     dst = Path(dst)

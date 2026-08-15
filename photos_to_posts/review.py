@@ -502,8 +502,20 @@ def _write_manifest(run_dir: Path, frames: Sequence[imaging.Frame],
     path = run_dir / "manifest.csv"
     with path.open("w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["index", "uuid", "filename", "captured_at", "burst_count", "thumbnail"])
+        w.writerow(["index", "uuid", "filename", "captured_at", "burst_count",
+                    "ratio", "fits", "thumbnail"])
         for i, f in enumerate(frames, 1):
+            ratio, fits = "", ""
+            try:
+                from PIL import Image
+                with Image.open(f.path) as im:
+                    fit = imaging.platform_fit(*im.size)
+                    ratio = f"{im.size[0] / im.size[1]:.3f}"
+                    # Only the platforms that will REJECT it are worth writing down.
+                    bad = [k for k, ok in fit.items() if not ok]
+                    fits = "ok" if not bad else "too tall for " + "/".join(sorted(bad))
+            except OSError:
+                pass
             w.writerow([i, f.uuid, f.filename, f.captured_at.isoformat(),
-                        counts.get(f.uuid, 1), str(f.path)])
+                        counts.get(f.uuid, 1), ratio, fits, str(f.path)])
     return path
