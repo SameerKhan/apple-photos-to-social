@@ -44,6 +44,8 @@ TERMINAL = frozenset({EXCLUDED_PRIVATE, EXCLUDED_JUNK})
 # decision, and re-surfacing it on every subsequent pass over the same months is
 # the exact failure this ledger exists to prevent. Pass `resurface_seen=True` to
 # take a second look.
+# SHORTLISTED is deliberately absent: a pick that was never published is still an
+# open decision, so it should come back until it is resolved either way.
 SETTLED = (SEEN, POSTED, EXCLUDED_PRIVATE, EXCLUDED_JUNK)
 SETTLED_STRICT = (POSTED, EXCLUDED_PRIVATE, EXCLUDED_JUNK)
 

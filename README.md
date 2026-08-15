@@ -135,6 +135,10 @@ Anything already reviewed is skipped. Anything that merely *looks* like somethin
 already reviewed is skipped too, by perceptual hash, which catches re-exports and
 duplicate imports that carry a different asset id.
 
+One status is deliberately not settled: `shortlisted`. A photo you picked but never
+published comes back on the next run, because it is still a decision you owe. Move it
+to `posted` or an `excluded_*` status to retire it.
+
 ## Publishing
 
 This repo deliberately stops at candidates. It does not post anything. Every
