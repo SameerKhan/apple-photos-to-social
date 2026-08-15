@@ -1,0 +1,85 @@
+# apple-photos-to-social configuration.
+#
+# Copy to ~/.config/photos-to-posts/config.toml and edit.
+# Never commit your real config: it holds home coordinates and album names.
+
+[ledger]
+# Remembers every asset already reviewed, so old months are not re-reviewed.
+path = "~/.photos-to-posts/ledger.db"
+
+[workspace]
+# Exported pixels, thumbnails and contact sheets land here, one directory per run.
+path = "~/.photos-to-posts/work"
+
+[review]
+default_days = 30
+exclude_screenshots = true
+# Skip anything smaller than this many pixels. 0 disables the check.
+min_pixels = 500000
+# Burst clustering: frames closer than this visually AND within the time gap are
+# treated as one moment. Raise to merge more aggressively.
+burst_max_distance = 12
+burst_max_gap_seconds = 180
+# Show assets that were reviewed and not chosen, again. Normally you do not want
+# this: suppressing them is the reason the ledger exists.
+resurface_seen = false
+# Show everything, including posted and excluded assets. For debugging.
+resurface_settled = false
+# How close a candidate must look to something already in the ledger before it is
+# treated as already seen. Tighter than burst_max_distance on purpose: a false
+# positive here hides a photo you never reviewed.
+history_max_distance = 6
+
+[privacy]
+# READ THIS.
+#
+# Apple's AppleScript interface exposes no face or person data, so this tool
+# CANNOT filter by "photos of my children". It has no idea who is in a picture.
+# The filters below are the only automatic protection available, and they are
+# blunt. Human review before publishing is not optional.
+#
+# Albums listed here are excluded entirely. The most reliable setup is the
+# inverse of a blocklist: keep one album of photos you are happy to publish, and
+# review only that.
+exclude_albums = ["Private", "Family"]
+
+# ALLOWLIST MODE, the safest way to use this tool.
+# When set, ONLY assets in these albums are ever candidates. Everything else in
+# the library is invisible, no matter what. Curate one album of photos you are
+# happy to publish and point this at it.
+# include_albums = ["Safe To Post"]
+
+# If an album named here does not exist, the run stops rather than continuing
+# with no protection. A typo is not treated as "exclude nothing".
+
+# Assets whose GPS falls inside a zone are excluded and recorded as private.
+# Replace these with your real coordinates. They are placeholders, not a location.
+[[privacy.exclude_zones]]
+name = "home"
+latitude = 0.0
+longitude = 0.0
+radius_m = 300
+
+# [[privacy.exclude_zones]]
+# name = "school"
+# latitude = 0.0
+# longitude = 0.0
+# radius_m = 200
+
+# With zones configured, withhold assets whose location could not be read.
+# Leave true unless you would rather see un-geotagged photos than miss them.
+require_location_for_zones = true
+
+[export]
+thumbnail_edge = 900
+# Refuse to start an export that would leave less than this much disk free.
+min_free_gb = 5
+assumed_mb_per_asset = 8
+
+[voice]
+# Optional. Files an agent should read before drafting copy, for example your own
+# tone guide or per-platform rules. Paths only; nothing is read by this package.
+guides = []
+
+[notes]
+# Free-form. Anything here is passed through for an agent to read.

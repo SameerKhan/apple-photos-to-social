@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "apple-photos-to-social"
+version = "0.1.0"
+description = "Review, deduplicate and privacy-filter an Apple Photos library into social post candidates. macOS, no Full Disk Access required."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [{ name = "Sameer Ahmed Khan" }]
+keywords = ["apple-photos", "macos", "applescript", "social-media", "photo-management",
+            "perceptual-hash", "deduplication", "automation"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: MacOS X",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS :: MacOS X",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Multimedia :: Graphics",
+]
+dependencies = ["Pillow>=10.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+photos2social = "photos_to_posts.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/SameerKhan/apple-photos-to-social"
+Issues = "https://github.com/SameerKhan/apple-photos-to-social/issues"
+
+# Distribution name, import name and CLI name intentionally differ:
+#   install as  apple-photos-to-social   (searchable, states the platform)
+#   import as   photos_to_posts          (short, stable)
+#   run as      photos2social            (short to type)
+[tool.hatch.build.targets.wheel]
+packages = ["photos_to_posts"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
