@@ -94,9 +94,19 @@ ledger.
 
 ## Install
 
+Not on PyPI yet, so install from source:
+
 ```bash
-pip install apple-photos-to-social
+git clone https://github.com/SameerKhan/apple-photos-to-social
+cd apple-photos-to-social
+pip install -e .
 photos2social doctor
+```
+
+Or without installing anything, using [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv run --with Pillow python -m photos_to_posts.cli doctor
 ```
 
 `doctor` reports whether Photos is reachable, whether Pillow and ffmpeg are present,
