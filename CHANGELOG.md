@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.1 (2026-08-16)
+
+Two defects found by the first real video run, not by review.
+
+- **Apple Event timeout on export.** 16 of 60 assets failed with AppleScript error
+  -1712, almost all of them videos. Apple Events have their own 120-second ceiling
+  independent of the subprocess timeout, and a large video export exceeds it. Exports
+  now raise it explicitly with `with timeout of`.
+- **A killed run was stranded at `state: 'running'` forever.** A process terminated by
+  a signal cannot run its own cleanup. SIGTERM and SIGINT are now converted to
+  exceptions so the existing failure path fires, and `start_run` reconciles any orphan
+  it finds as `interrupted`.
+
 ## 0.3.0 (2026-08-16)
 
 Driven by a measured diagnosis: after all prior work the ledger held **13 of 49,513

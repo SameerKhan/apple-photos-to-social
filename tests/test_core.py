@@ -982,3 +982,34 @@ def test_video_duration_returns_none_without_ffprobe(tmp_path, monkeypatch):
     p = tmp_path / "nope.mov"
     p.write_bytes(b"not a video")
     assert imaging.video_duration(p) is None
+
+
+def test_a_killed_run_is_reconciled_on_the_next_start(tmp_path):
+    # REGRESSION: a real run was killed by a harness timeout and sat at state
+    # 'running' forever, because a terminated process cannot run its own cleanup.
+    with L.Ledger(tmp_path / "l.db") as led:
+        orphan = led.start_run(window="2026-01")
+        assert led.stale_runs() == [orphan]
+        second = led.start_run(window="2026-02")
+        assert led.stale_runs() == [second], "the orphan should have been reconciled"
+        import sqlite3
+        row = led.conn.execute("SELECT state, finished_at FROM runs WHERE id=?",
+                               (orphan,)).fetchone()
+        assert row[0] == "interrupted" and row[1] is not None
+
+
+def test_export_script_raises_the_apple_event_timeout(monkeypatch, tmp_path):
+    # REGRESSION: 16 of 60 assets failed to export with AppleScript error -1712,
+    # "AppleEvent timed out". Apple Events have their own 120s ceiling independent of
+    # the subprocess timeout, and a large video export exceeds it.
+    seen = {}
+
+    def fake_run(script, timeout=900):
+        seen["script"] = script
+        return ""
+
+    monkeypatch.setattr(ps, "run", fake_run)
+    ps.export_assets(["ABC-1/L0/001"], tmp_path / "out")
+    assert "with timeout of" in seen["script"], "export must raise the Apple Event timeout"
+    assert str(ps.APPLE_EVENT_TIMEOUT) in seen["script"]
+    assert "end timeout" in seen["script"]

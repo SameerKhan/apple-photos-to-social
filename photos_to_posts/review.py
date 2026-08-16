@@ -12,6 +12,7 @@ a model.
 from __future__ import annotations
 
 import shutil
+import signal
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -321,6 +322,20 @@ def run_review(cfg: Config, *, days: int | None = None, since: datetime | None =
 
         run_id = ledger.start_run(window=_window_label(window))
         recorded = 0
+
+        # SIGTERM and SIGINT are turned into exceptions so the finally-path below can
+        # mark the run. Without this a timeout or a Ctrl-C strands it at 'running'.
+        def _on_signal(signum, _frame):
+            raise KeyboardInterrupt(f"received signal {signum}")
+
+        previous = {}
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                previous[sig] = signal.getsignal(sig)
+                signal.signal(sig, _on_signal)
+            except (ValueError, OSError):
+                pass        # not on the main thread; nothing to restore
+
         try:
             run_dir = cfg.workspace / f"run_{run_id:05d}"
             # Run ids restart at 1 with a fresh ledger, so a directory of this
@@ -453,6 +468,12 @@ def run_review(cfg: Config, *, days: int | None = None, since: datetime | None =
             ledger.finish_run(run_id, examined=len(candidates), recorded=recorded,
                               state="failed")
             raise
+        finally:
+            for sig, handler in previous.items():
+                try:
+                    signal.signal(sig, handler)
+                except (ValueError, OSError):
+                    pass
 
     return result
 

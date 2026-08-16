@@ -344,11 +344,25 @@ class Ledger:
             self.conn.execute("DELETE FROM asset_cache")
 
     def start_run(self, window: str | None, note: str | None = None) -> int:
+        """Begin a run, first reconciling any that were killed rather than finished.
+
+        A process terminated by SIGKILL, a closed laptop, or a harness timeout cannot
+        run its own cleanup, so its row would otherwise sit at 'running' forever and
+        quietly corrupt any report built from run state.
+        """
         with self.conn:
             cur = self.conn.cursor()
+            cur.execute(
+                "UPDATE runs SET state='interrupted', finished_at=?"
+                " WHERE state='running'", (_now(),))
             cur.execute("INSERT INTO runs (started_at, window, note) VALUES (?,?,?)",
                         (_now(), window, note))
             return int(cur.lastrowid)
+
+    def stale_runs(self) -> list[int]:
+        with closing(self.conn.cursor()) as cur:
+            return [r[0] for r in cur.execute(
+                "SELECT id FROM runs WHERE state='running'")]
 
     def finish_run(self, run_id: int, examined: int, recorded: int,
                    state: str = "completed") -> None:

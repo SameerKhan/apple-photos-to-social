@@ -24,6 +24,10 @@ from typing import Iterable, Sequence
 # For those we ask AppleScript to join with this sentinel instead.
 DELIM = "|@|"
 
+# Apple Events time out after 120 seconds by default, which a large video export
+# exceeds. Raised explicitly wherever an export happens.
+APPLE_EVENT_TIMEOUT = 600
+
 MONTHS = {m: i for i, m in enumerate(
     ["january", "february", "march", "april", "may", "june", "july",
      "august", "september", "october", "november", "december"], 1)}
@@ -413,9 +417,16 @@ def export_assets(uuids: Iterable[str], dest_root: str | Path, *, originals: boo
                 stale.unlink()
             elif stale.is_dir():
                 shutil.rmtree(stale, ignore_errors=True)
+        # `with timeout` is required, not optional. Apple Events have their own
+        # 120-second ceiling that is independent of the subprocess timeout, and a
+        # large video export blows straight through it with error -1712. Measured:
+        # this was failing roughly a quarter of a mixed photo/video batch, almost
+        # all of them videos.
         script = (f'tell application "Photos"\n'
-                  f'\tset theItems to {{media item id "{uid}"}}\n'
-                  f'\texport theItems to POSIX file "{quote(str(target))}"{using}\n'
+                  f'\twith timeout of {APPLE_EVENT_TIMEOUT} seconds\n'
+                  f'\t\tset theItems to {{media item id "{uid}"}}\n'
+                  f'\t\texport theItems to POSIX file "{quote(str(target))}"{using}\n'
+                  f'\tend timeout\n'
                   f'end tell')
         try:
             run(script)
