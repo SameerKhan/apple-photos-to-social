@@ -161,10 +161,9 @@ def cmd_scan(args) -> int:
     if Path(cfg.ledger_path).expanduser().exists():
         with Ledger(cfg.ledger_path) as ledger:
             settled = ledger.settled_uuids(include_seen=not cfg.resurface_seen)
+            fresh = [a for a in window if ledger.digest(a.uuid) not in settled]
     else:
-        settled = set()
-
-    fresh = [a for a in window if a.uuid not in settled]
+        fresh = list(window)
     photos = sum(1 for a in fresh if a.kind == "photo")
     videos = sum(1 for a in fresh if a.kind == "video")
     shots = sum(1 for a in fresh if a.is_screenshot)

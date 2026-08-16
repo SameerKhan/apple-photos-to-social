@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "apple-photos-to-social"
-version = "0.3.1"
+version = "0.4.0"
 description = "Review, deduplicate and privacy-filter an Apple Photos library into social post candidates. macOS, no Full Disk Access required."
 readme = "README.md"
 license = { file = "LICENSE" }

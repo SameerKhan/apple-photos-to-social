@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.4.0 (2026-08-16)
+
+**The ledger no longer remembers what it merely looked at.**
+
+A ledger built to prevent re-reviewing old photos does not need to know which photos
+they were. Before this release it stored the Photos identifier, the filename and the
+capture date for every asset it had ever seen, which meant a suppression list doubled
+as a readable index of someone's camera roll.
+
+- **Identity is now a salted digest.** The primary key is
+  `sha256(per-ledger-salt + uuid)`, truncated. Dedup and status lookups work exactly as
+  before because they only ever needed equality, never the value. The salt is generated
+  once per ledger with `secrets` and stored inside it, so the digests are not reversible
+  by precomputation across libraries.
+- **Only decisions stay legible.** `shortlisted`, `posted`, `excluded_private` and
+  `excluded_junk` keep the plain identifier, filename and date, because a publication
+  log that cannot say what was published is useless and an exclusion you cannot audit is
+  not an exclusion. `seen` keeps none of it.
+- **A real leak is closed:** `set_status` was writing the raw identifier into
+  `status_history` regardless of status.
+- **The migration checks constraints, not proxies.** An earlier attempt tested for the
+  presence of the new column, which a half-applied migration satisfies while leaving the
+  old `NOT NULL` schema in place. It now reads `PRAGMA table_info` and rebuilds whenever
+  the real constraints are stale, so a failed run is safe to retry.
+
 ## 0.3.1 (2026-08-16)
 
 Two defects found by the first real video run, not by review.

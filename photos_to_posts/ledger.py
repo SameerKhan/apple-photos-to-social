@@ -17,7 +17,9 @@ marked private or junk, an automated pass can never undo that. Only an explicit
 """
 from __future__ import annotations
 
+import hashlib
 import os
+import secrets
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
@@ -49,11 +51,22 @@ TERMINAL = frozenset({EXCLUDED_PRIVATE, EXCLUDED_JUNK})
 SETTLED = (SEEN, POSTED, EXCLUDED_PRIVATE, EXCLUDED_JUNK)
 SETTLED_STRICT = (POSTED, EXCLUDED_PRIVATE, EXCLUDED_JUNK)
 
+# Statuses whose identifying details are kept in plaintext. A deliberate decision is
+# worth being able to audit later; "I glanced at this and moved on" is not, and keeping
+# a readable list of every photograph someone owns is a cost with no matching benefit.
+LEGIBLE_STATUSES = frozenset({SHORTLISTED, POSTED, EXCLUDED_PRIVATE, EXCLUDED_JUNK})
+
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS assets (
-    uuid         TEXT PRIMARY KEY,
-    filename     TEXT NOT NULL,
-    captured_at  TEXT NOT NULL,
+    uuid         TEXT PRIMARY KEY,   -- salted digest of the Photos id, not the id
+    plain_uuid   TEXT,               -- kept only for statuses in LEGIBLE_STATUSES
+    filename     TEXT,               -- same
+    captured_at  TEXT,               -- same
     kind         TEXT NOT NULL,
     phash        TEXT,
     status       TEXT NOT NULL,
@@ -166,6 +179,33 @@ class Ledger:
     personal photographs.
     """
 
+    def digest(self, uuid: str) -> str:
+        """Public form of the key derivation, for callers doing membership checks."""
+        return self._digest(uuid)
+
+    def _digest(self, uuid: str) -> str:
+        """Stable, per-ledger digest of a Photos id.
+
+        This is obfuscation, not secrecy, and the distinction matters. It stops the
+        file being readable as an inventory of someone's photographs. It does NOT hide
+        anything from a process that holds both this file and the library, because
+        such a process can digest every id and compare. That capability is exactly
+        what deduplication requires, so it cannot be designed away.
+        """
+        if uuid.startswith("sha256:"):
+            return uuid                      # already a digest
+        return "sha256:" + hashlib.sha256(
+            (self._salt + uuid).encode("utf-8")).hexdigest()[:32]
+
+    def _load_salt(self) -> str:
+        cur = self.conn.execute("SELECT value FROM meta WHERE key='salt'").fetchone()
+        if cur:
+            return cur[0]
+        salt = secrets.token_hex(16)
+        with self.conn:
+            self.conn.execute("INSERT INTO meta (key, value) VALUES ('salt', ?)", (salt,))
+        return salt
+
     def __init__(self, path: str | Path):
         self.path = Path(path).expanduser()
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -184,6 +224,57 @@ class Ledger:
         with closing(self.conn.cursor()) as cur:
             cur.executescript(SCHEMA)
         self.conn.commit()
+        self._migrate()
+        self._salt = self._load_salt()
+
+    def _migrate(self) -> None:
+        """Bring a pre-0.4 ledger forward: digest the ids, drop details for `seen`.
+
+        The old table declared filename and captured_at NOT NULL, and SQLite cannot
+        relax a constraint with ALTER, so the table is rebuilt rather than patched.
+        """
+        # Check the ACTUAL constraints, not a proxy for them. A first attempt at this
+        # migration added plain_uuid and then failed on the NOT NULL columns, leaving a
+        # half-migrated database that a "does plain_uuid exist" test would skip.
+        info = list(self.conn.execute("PRAGMA table_info(assets)"))
+        cols = {r[1] for r in info}
+        notnull = {r[1] for r in info if r[3]}
+        needs_rebuild = ("plain_uuid" not in cols
+                         or "filename" in notnull or "captured_at" in notnull)
+        if needs_rebuild:
+            keep = [c for c in ("uuid", "plain_uuid", "filename", "captured_at", "kind",
+                                "phash", "status", "note", "destination", "first_seen",
+                                "updated_at") if c in cols]
+            with self.conn:
+                self.conn.execute("ALTER TABLE assets RENAME TO assets_old")
+                self.conn.executescript(SCHEMA)
+                self.conn.execute(
+                    f"INSERT INTO assets ({', '.join(keep)})"
+                    f" SELECT {', '.join(keep)} FROM assets_old")
+                self.conn.execute("DROP TABLE assets_old")
+        # Rows still holding a raw Photos id look like "XXXX-.../L0/001".
+        raw = self.conn.execute(
+            "SELECT uuid, status FROM assets WHERE uuid NOT LIKE 'sha256:%'").fetchall()
+        if not raw:
+            return
+        salt = self._load_salt()
+        self._salt = salt
+        with self.conn:
+            for uuid, status in raw:
+                digest = self._digest(uuid)
+                if status in LEGIBLE_STATUSES:
+                    self.conn.execute(
+                        "UPDATE assets SET uuid=?, plain_uuid=? WHERE uuid=?",
+                        (digest, uuid, uuid))
+                else:
+                    # A merely-seen asset keeps no readable identity at all.
+                    self.conn.execute(
+                        "UPDATE assets SET uuid=?, plain_uuid=NULL, filename=NULL,"
+                        " captured_at=NULL WHERE uuid=?", (digest, uuid))
+                self.conn.execute("UPDATE status_history SET uuid=? WHERE uuid=?",
+                                  (digest, uuid))
+                self.conn.execute("UPDATE publications SET uuid=? WHERE uuid=?",
+                                  (digest, uuid))
 
     def __enter__(self) -> "Ledger":
         return self
@@ -214,32 +305,45 @@ class Ledger:
             return self._write(self.conn.cursor(), uuid, filename, cap, kind, status,
                                hexed, note, destination, reason, now)
 
+    def _identity(self, uuid: str, filename: str, cap: str, status: str):
+        """(key, plain_uuid, filename, captured_at) for a row, per the retention rule."""
+        key = self._digest(uuid)
+        if status in LEGIBLE_STATUSES:
+            return key, (None if uuid.startswith("sha256:") else uuid), filename, cap
+        return key, None, None, None
+
     def _write(self, cur, uuid, filename, cap, kind, status, hexed, note, destination,
                reason, now) -> str:
         """Row-level write. Caller owns the transaction."""
-        row = cur.execute("SELECT status FROM assets WHERE uuid = ?", (uuid,)).fetchone()
+        key = self._digest(uuid)
+        row = cur.execute("SELECT status FROM assets WHERE uuid = ?", (key,)).fetchone()
         if row is None:
+            _, plain, fname, capd = self._identity(uuid, filename, cap, status)
             cur.execute(
-                "INSERT INTO assets (uuid, filename, captured_at, kind, phash, status,"
-                " note, destination, first_seen, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (uuid, filename, cap, kind, hexed, status, note, destination, now, now))
+                "INSERT INTO assets (uuid, plain_uuid, filename, captured_at, kind,"
+                " phash, status, note, destination, first_seen, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (key, plain, fname, capd, kind, hexed, status, note, destination,
+                 now, now))
             cur.execute(
                 "INSERT INTO status_history (uuid, old_status, new_status, reason, changed_at)"
-                " VALUES (?,?,?,?,?)", (uuid, None, status, reason, now))
+                " VALUES (?,?,?,?,?)", (key, None, status, reason, now))
             return status
 
         current = row["status"]
         # Terminal states absorb automated writes. This is the privacy rule.
         final = current if current in TERMINAL else status
+        _, plain, fname, capd = self._identity(uuid, filename, cap, final)
         cur.execute(
-            "UPDATE assets SET filename=?, captured_at=?, kind=?, status=?,"
-            " phash=COALESCE(?, phash), note=COALESCE(?, note),"
+            "UPDATE assets SET plain_uuid=COALESCE(?, plain_uuid),"
+            " filename=COALESCE(?, filename), captured_at=COALESCE(?, captured_at),"
+            " kind=?, status=?, phash=COALESCE(?, phash), note=COALESCE(?, note),"
             " destination=COALESCE(?, destination), updated_at=? WHERE uuid=?",
-            (filename, cap, kind, final, hexed, note, destination, now, uuid))
+            (plain, fname, capd, kind, final, hexed, note, destination, now, key))
         if final != current:
             cur.execute(
                 "INSERT INTO status_history (uuid, old_status, new_status, reason, changed_at)"
-                " VALUES (?,?,?,?,?)", (uuid, current, final, reason, now))
+                " VALUES (?,?,?,?,?)", (key, current, final, reason, now))
         return final
 
     def record_many(self, rows: Iterable[dict]) -> int:
@@ -275,24 +379,30 @@ class Ledger:
         if status not in ALL_STATUSES:
             raise ValueError(f"unknown status {status!r}")
         now = _now()
+        key = self._digest(uuid)
         with self.conn:
             cur = self.conn.cursor()
-            row = cur.execute("SELECT status FROM assets WHERE uuid=?", (uuid,)).fetchone()
+            row = cur.execute("SELECT status FROM assets WHERE uuid=?", (key,)).fetchone()
             if row is None:
                 return False
+            # Promoting to a legible status re-attaches the identity the caller holds.
+            # Details discarded earlier are gone and are not reconstructed.
+            plain = uuid if (status in LEGIBLE_STATUSES
+                             and not uuid.startswith("sha256:")) else None
             cur.execute(
-                "UPDATE assets SET status=?, note=COALESCE(?, note),"
+                "UPDATE assets SET status=?, plain_uuid=COALESCE(?, plain_uuid),"
+                " note=COALESCE(?, note),"
                 " destination=COALESCE(?, destination), updated_at=? WHERE uuid=?",
-                (status, note, destination, now, uuid))
+                (status, plain, note, destination, now, key))
             cur.execute(
                 "INSERT INTO status_history (uuid, old_status, new_status, reason, changed_at)"
-                " VALUES (?,?,?,?,?)", (uuid, row["status"], status, reason, now))
+                " VALUES (?,?,?,?,?)", (key, row["status"], status, reason, now))
             if status == POSTED and destination:
                 # Appended, never overwritten: the same photo may go to several
                 # platforms and each one is a separate event with its own timestamp.
                 cur.execute(
                     "INSERT INTO publications (uuid, destination, published_at, note)"
-                    " VALUES (?,?,?,?)", (uuid, destination, now, note))
+                    " VALUES (?,?,?,?)", (key, destination, now, note))
         return True
 
     def record_publication(self, uuid: str, destination: str,
@@ -301,7 +411,7 @@ class Ledger:
         with self.conn:
             self.conn.execute(
                 "INSERT INTO publications (uuid, destination, published_at, note)"
-                " VALUES (?,?,?,?)", (uuid, destination, _now(), note))
+                " VALUES (?,?,?,?)", (self._digest(uuid), destination, _now(), note))
 
     def publications(self, limit: int = 200) -> list[tuple[str, str, str, str | None]]:
         """(uuid, destination, published_at, filename), most recent first."""
@@ -395,7 +505,7 @@ class Ledger:
         with closing(self.conn.cursor()) as cur:
             row = cur.execute(
                 "SELECT uuid, filename, captured_at, kind, phash, status, note, destination"
-                " FROM assets WHERE uuid=?", (uuid,)).fetchone()
+                " FROM assets WHERE uuid=?", (self._digest(uuid),)).fetchone()
         if not row:
             return None
         d = dict(row)
@@ -437,12 +547,14 @@ class Ledger:
     def coverage(self) -> list[tuple[str, int]]:
         """Assets reviewed per month, oldest first. Shows how far back you have got."""
         with closing(self.conn.cursor()) as cur:
+            # Only rows that kept a capture date, which by design is the decisions.
             return [(r[0], r[1]) for r in cur.execute(
-                "SELECT substr(captured_at,1,7) m, COUNT(*) FROM assets GROUP BY m ORDER BY m")]
+                "SELECT substr(captured_at,1,7) m, COUNT(*) FROM assets"
+                " WHERE captured_at IS NOT NULL GROUP BY m ORDER BY m")]
 
     def history(self, uuid: str) -> list[tuple[str | None, str, str | None, str]]:
         with closing(self.conn.cursor()) as cur:
             return [(r["old_status"], r["new_status"], r["reason"], r["changed_at"])
                     for r in cur.execute(
                         "SELECT old_status, new_status, reason, changed_at FROM status_history"
-                        " WHERE uuid=? ORDER BY id", (uuid,))]
+                        " WHERE uuid=? ORDER BY id", (self._digest(uuid),))]

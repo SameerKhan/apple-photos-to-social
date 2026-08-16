@@ -166,7 +166,9 @@ def apply_filters(assets: Sequence[ps.Asset], cfg: Config, ledger: Ledger,
     kept: list[ps.Asset] = []
     excluded_private: list[tuple[ps.Asset, str]] = []
     for a in assets:
-        if a.uuid in settled:
+        # `settled` holds digests, not raw ids: the ledger deliberately does not keep
+        # a readable list of what has been looked at.
+        if ledger.digest(a.uuid) in settled:
             result.skipped_known += 1
             continue
         # Privacy is evaluated BEFORE the cheap content filters. Otherwise a
@@ -256,8 +258,9 @@ def screen_against_history(frames: Sequence[imaging.Frame], ledger: Ledger, cfg:
         # Skip the asset's own history row. With resurface_settled the asset is
         # deliberately back in the candidate set, and matching it against itself
         # both drops it again and rewrites its status.
+        own = ledger.digest(frame.uuid)
         if any(hamming(stored, frame.phash) <= cfg.history_max_distance
-               for uuid, stored, _st in history if uuid != frame.uuid):
+               for uuid, stored, _st in history if uuid != own):
             result.skipped_seen_before_visually += 1
             asset = assets.get(frame.uuid)
             if asset is not None:

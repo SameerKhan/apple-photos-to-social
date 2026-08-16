@@ -212,7 +212,7 @@ def test_explicit_set_status_can_override_terminal(led):
 def test_status_changes_are_audited(led):
     _rec(led, status=L.EXCLUDED_PRIVATE)
     led.set_status("a/L0/001", L.POSTED, reason="published")
-    hist = led.history("a/L0/001")
+    hist = led.history("a/L0/001")   # accepts the raw id and digests it internally
     assert hist[0][1] == L.EXCLUDED_PRIVATE
     assert hist[-1][1:3] == (L.POSTED, "published")
 
@@ -220,9 +220,13 @@ def test_status_changes_are_audited(led):
 def test_seen_counts_as_settled(led):
     # REGRESSION: `seen` was excluded from the settled set, so every reviewed but
     # unchosen asset resurfaced on the next run.
+    # The set holds digests, not raw ids: the ledger keeps no readable list of what
+    # was merely looked at.
     _rec(led, status=L.SEEN)
-    assert "a/L0/001" in led.settled_uuids()
-    assert "a/L0/001" not in led.settled_uuids(include_seen=False)
+    key = led.digest("a/L0/001")
+    assert key in led.settled_uuids()
+    assert key not in led.settled_uuids(include_seen=False)
+    assert "a/L0/001" not in led.settled_uuids(), "a raw id must never be stored"
 
 
 def test_set_status_unknown_uuid_returns_false(led):
@@ -252,7 +256,9 @@ def test_stats_and_coverage(led):
     _rec(led, "a/L0/001", status=L.POSTED)
     _rec(led, "b/L0/001", status=L.SEEN)
     assert led.stats()["total"] == 2
-    assert led.coverage() == [("2026-01", 2)]
+    # Coverage counts only rows that kept a capture date, which by design is the
+    # decisions. A merely-seen asset contributes to dedup but not to the timeline.
+    assert led.coverage() == [("2026-01", 1)]
 
 
 # --------------------------------------------------------------------------
@@ -1013,3 +1019,135 @@ def test_export_script_raises_the_apple_event_timeout(monkeypatch, tmp_path):
     assert "with timeout of" in seen["script"], "export must raise the Apple Event timeout"
     assert str(ps.APPLE_EVENT_TIMEOUT) in seen["script"]
     assert "end timeout" in seen["script"]
+
+
+
+def test_seen_assets_keep_no_readable_identity(tmp_path):
+    # The retention rule Sameer chose: dedup still works, but a photo merely looked at
+    # leaves no filename, date or id behind.
+    with L.Ledger(tmp_path / "l.db") as led:
+        led.record(uuid="secret/L0/001", filename="IMG_PRIVATE.HEIC",
+                   captured_at=datetime(2026, 5, 5), kind="photo", status=L.SEEN)
+        row = led.conn.execute(
+            "SELECT uuid, plain_uuid, filename, captured_at FROM assets").fetchone()
+        assert row[0].startswith("sha256:")
+        assert row[1] is None and row[2] is None and row[3] is None
+        # and yet the whole point still holds
+        assert led.digest("secret/L0/001") in led.settled_uuids()
+
+
+def test_decisions_keep_their_identity(tmp_path):
+    with L.Ledger(tmp_path / "l.db") as led:
+        led.record(uuid="keep/L0/001", filename="IMG_KEEP.HEIC",
+                   captured_at=datetime(2026, 5, 5), kind="photo", status=L.POSTED,
+                   destination="instagram")
+        rec = led.get("keep/L0/001")
+        assert rec is not None and rec.filename == "IMG_KEEP.HEIC"
+        row = led.conn.execute("SELECT plain_uuid FROM assets").fetchone()
+        assert row[0] == "keep/L0/001"
+
+
+def test_promoting_a_seen_asset_does_not_resurrect_discarded_details(tmp_path):
+    with L.Ledger(tmp_path / "l.db") as led:
+        led.record(uuid="x/L0/001", filename="IMG_X.HEIC",
+                   captured_at=datetime(2026, 5, 5), kind="photo", status=L.SEEN)
+        led.set_status("x/L0/001", L.POSTED, destination="facebook")
+        row = led.conn.execute(
+            "SELECT plain_uuid, filename FROM assets").fetchone()
+        # the id comes back because the caller supplied it; the filename does not,
+        # because it was discarded and is not reconstructed
+        assert row[0] == "x/L0/001"
+        assert row[1] is None
+
+
+def test_no_raw_photos_id_reaches_any_table(tmp_path):
+    # REGRESSION: set_status wrote the raw id into status_history while every other
+    # write used the digest, so the readable id leaked back in through the audit trail.
+    with L.Ledger(tmp_path / "l.db") as led:
+        raw = "LEAK-ME-1234/L0/001"
+        led.record(uuid=raw, filename="f.jpg", captured_at=datetime(2026, 1, 1),
+                   kind="photo", status=L.SEEN)
+        led.set_status(raw, L.POSTED, destination="instagram", reason="published")
+        led.record_publication(raw, "facebook")
+        for table, column in (("assets", "uuid"), ("status_history", "uuid"),
+                              ("publications", "uuid")):
+            vals = [r[0] for r in led.conn.execute(f"SELECT {column} FROM {table}")]
+            assert all(v.startswith("sha256:") for v in vals), \
+                f"{table}.{column} holds a raw id: {vals}"
+        # plain_uuid is the ONE place an id is kept, and only for a decision
+        plain = [r[0] for r in led.conn.execute("SELECT plain_uuid FROM assets")]
+        assert plain == [raw], "a deliberate decision should keep its id"
+
+
+def test_migration_from_the_old_not_null_schema(tmp_path):
+    # REGRESSION: the pre-0.4 table declared filename and captured_at NOT NULL, and
+    # SQLite cannot relax that with ALTER, so the first migration attempt against a
+    # real ledger raised IntegrityError.
+    import sqlite3
+    path = tmp_path / "old.db"
+    con = sqlite3.connect(path)
+    con.executescript("""
+        CREATE TABLE assets (
+            uuid TEXT PRIMARY KEY, filename TEXT NOT NULL, captured_at TEXT NOT NULL,
+            kind TEXT NOT NULL, phash TEXT, status TEXT NOT NULL, note TEXT,
+            destination TEXT, first_seen TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE status_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL, old_status TEXT,
+            new_status TEXT NOT NULL, reason TEXT, changed_at TEXT NOT NULL);
+        CREATE TABLE runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL,
+            finished_at TEXT, state TEXT NOT NULL DEFAULT 'running', window TEXT,
+            examined INTEGER NOT NULL DEFAULT 0, recorded INTEGER NOT NULL DEFAULT 0,
+            note TEXT);
+    """)
+    con.execute("INSERT INTO assets VALUES ('old-seen/L0/001','S.HEIC','2026-01-01',"
+                "'photo','abcd','seen',NULL,NULL,'2026-01-01','2026-01-01')")
+    con.execute("INSERT INTO assets VALUES ('old-post/L0/001','P.HEIC','2026-01-02',"
+                "'photo','beef','posted',NULL,'instagram','2026-01-02','2026-01-02')")
+    con.commit(); con.close()
+
+    with L.Ledger(path) as led:
+        assert led.stats()["total"] == 2
+        rows = {r[0]: r for r in led.conn.execute(
+            "SELECT status, uuid, plain_uuid, filename FROM assets")}
+        seen, posted = rows["seen"], rows["posted"]
+        assert seen[1].startswith("sha256:") and seen[2] is None and seen[3] is None
+        assert posted[1].startswith("sha256:") and posted[2] == "old-post/L0/001"
+        assert posted[3] == "P.HEIC", "a decision keeps its filename"
+        # and dedup survives the migration
+        assert led.digest("old-seen/L0/001") in led.settled_uuids()
+
+
+def test_migration_is_idempotent_from_a_half_migrated_state(tmp_path):
+    # REGRESSION: a failed first attempt added plain_uuid and then errored on the
+    # NOT NULL columns. The retry then skipped the rebuild, because it tested for the
+    # column rather than for the constraint, and failed identically forever.
+    import sqlite3
+    path = tmp_path / "half.db"
+    con = sqlite3.connect(path)
+    con.executescript("""
+        CREATE TABLE assets (
+            uuid TEXT PRIMARY KEY, filename TEXT NOT NULL, captured_at TEXT NOT NULL,
+            kind TEXT NOT NULL, phash TEXT, status TEXT NOT NULL, note TEXT,
+            destination TEXT, first_seen TEXT NOT NULL, updated_at TEXT NOT NULL);
+        ALTER TABLE assets ADD COLUMN plain_uuid TEXT;
+        CREATE TABLE status_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL, old_status TEXT,
+            new_status TEXT NOT NULL, reason TEXT, changed_at TEXT NOT NULL);
+        CREATE TABLE runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL,
+            finished_at TEXT, state TEXT NOT NULL DEFAULT 'running', window TEXT,
+            examined INTEGER NOT NULL DEFAULT 0, recorded INTEGER NOT NULL DEFAULT 0,
+            note TEXT);
+    """)
+    con.execute("INSERT INTO assets (uuid,filename,captured_at,kind,phash,status,"
+                "first_seen,updated_at) VALUES ('h/L0/001','H.HEIC','2026-01-01',"
+                "'photo','aa','seen','2026-01-01','2026-01-01')")
+    con.commit(); con.close()
+
+    with L.Ledger(path) as led:           # must not raise
+        assert led.stats()["total"] == 1
+        row = led.conn.execute("SELECT uuid, filename FROM assets").fetchone()
+        assert row[0].startswith("sha256:") and row[1] is None
+    with L.Ledger(path) as led:           # and opening again must be a no-op
+        assert led.stats()["total"] == 1
