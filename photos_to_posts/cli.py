@@ -5,9 +5,9 @@ Commands:
   doctor    check the machine can actually run this
   scan      metadata only: what is in a window, what is new, nothing exported
   review    the full pass: export, dedupe, contact sheets, manifest, ledger
-  mark      record a decision against an asset (shortlisted / posted / private)
+  mark      record a decision against an asset by id\n  mark-sheet same, but by the number printed on the contact sheet
   stats     ledger totals
-  coverage  how far back the library has been reviewed\n  diagnose  report what a photo actually needs, and optionally fix it
+  coverage  how far back the library has been reviewed\n  report    what was published, where and when\n  diagnose  report what a photo actually needs, and optionally fix it
   purge     delete exported pixels, keeping the ledger
 
 ``scan`` exists so the expensive step is always opt-in: you can see the shape of
@@ -66,6 +66,19 @@ def build_parser() -> argparse.ArgumentParser:
     mark.add_argument("status", choices=list(ALL_STATUSES))
     mark.add_argument("--note")
     mark.add_argument("--destination", help="where it was published, for posted assets")
+
+    marksheet = sub.add_parser(
+        "mark-sheet", help="mark by contact-sheet number instead of asset id")
+    _add_common(marksheet)
+    marksheet.add_argument("run", help="a run directory, or its number, or 'latest'")
+    marksheet.add_argument("index", type=int, help="the number printed on the tile")
+    marksheet.add_argument("status", choices=list(ALL_STATUSES))
+    marksheet.add_argument("--note")
+    marksheet.add_argument("--destination", help="where it was published")
+
+    report = sub.add_parser("report", help="what was published, where and when")
+    _add_common(report)
+    report.add_argument("--limit", type=int, default=50)
 
     stats = sub.add_parser("stats", help="ledger totals")
     _add_common(stats)
@@ -207,6 +220,78 @@ def cmd_mark(args) -> int:
     return 1
 
 
+def _resolve_run(cfg, spec: str) -> Path | None:
+    """Accept a path, a bare run number, or 'latest'."""
+    p = Path(spec).expanduser()
+    if p.is_dir():
+        return p
+    runs = sorted(cfg.workspace.glob("run_*"))
+    if spec == "latest":
+        return runs[-1] if runs else None
+    if spec.isdigit():
+        target = cfg.workspace / f"run_{int(spec):05d}"
+        return target if target.is_dir() else None
+    return None
+
+
+def cmd_mark_sheet(args) -> int:
+    """Mark an asset using the number printed on the contact sheet.
+
+    This exists because copying a 36-character id out of a CSV is enough friction that
+    the marking step simply does not happen, which leaves the ledger empty and the
+    whole no-repeat guarantee useless.
+    """
+    import csv
+    cfg = load_config(args.config)
+    run_dir = _resolve_run(cfg, args.run)
+    if run_dir is None:
+        print(f"no such run: {args.run}. Try 'latest' or a run number.", file=sys.stderr)
+        return 1
+    manifest = run_dir / "manifest.csv"
+    if not manifest.exists():
+        print(f"no manifest in {run_dir}", file=sys.stderr)
+        return 1
+
+    with manifest.open() as fh:
+        rows = {int(r["index"]): r for r in csv.DictReader(fh)}
+    row = rows.get(args.index)
+    if row is None:
+        print(f"#{args.index} is not in {manifest.name} "
+              f"(it has 1 to {max(rows) if rows else 0})", file=sys.stderr)
+        return 1
+
+    with Ledger(cfg.ledger_path) as ledger:
+        ok = ledger.set_status(row["uuid"], args.status, note=args.note,
+                               destination=args.destination)
+    if not ok:
+        print(f"#{args.index} ({row['filename']}) is not in the ledger yet",
+              file=sys.stderr)
+        return 1
+    where = f" -> {args.destination}" if args.destination else ""
+    print(f"#{args.index}  {row['filename']}  {args.status}{where}")
+    return 0
+
+
+def cmd_report(args) -> int:
+    cfg = load_config(args.config)
+    with Ledger(cfg.ledger_path) as ledger:
+        rows = ledger.publications(limit=args.limit)
+        stats = ledger.stats()
+    if not rows:
+        print("nothing published through the ledger yet.")
+        print(f"(the ledger holds {stats.get('total', 0)} assets, "
+              f"{stats.get('posted', 0)} marked posted)")
+        return 0
+    by_dest: dict[str, int] = {}
+    print(f"{'when':20s} {'where':14s} file")
+    for uuid, dest, when, filename in rows:
+        by_dest[dest] = by_dest.get(dest, 0) + 1
+        print(f"{when[:19]:20s} {dest:14s} {filename or uuid[:18]}")
+    print("\nby destination: " + ", ".join(f"{k} {v}" for k, v in
+                                            sorted(by_dest.items(), key=lambda x: -x[1])))
+    return 0
+
+
 def cmd_stats(args) -> int:
     cfg = load_config(args.config)
     with Ledger(cfg.ledger_path) as ledger:
@@ -286,6 +371,7 @@ COMMANDS = {
     "doctor": cmd_doctor, "scan": cmd_scan, "review": cmd_review,
     "mark": cmd_mark, "stats": cmd_stats, "coverage": cmd_coverage,
     "diagnose": cmd_diagnose, "purge": cmd_purge,
+    "mark-sheet": cmd_mark_sheet, "report": cmd_report,
 }
 
 

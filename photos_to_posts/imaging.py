@@ -57,6 +57,82 @@ def hamming(a: int, b: int) -> int:
     return bin(a ^ b).count("1")
 
 
+def video_duration(path: str | Path) -> float | None:
+    """Clip length in seconds via ffprobe, or None if it cannot be determined.
+
+    Needed before sampling: the old code always grabbed a frame at 1.0s, which on a
+    dive clip is the surface of the water and tells you nothing about the dive.
+    """
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, timeout=60)
+        if proc.returncode != 0:
+            return None
+        value = float(proc.stdout.strip())
+        return value if value > 0 else None
+    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+        return None
+
+
+# Where to sample a clip, as fractions of its duration. Deliberately avoids the very
+# start and end, which are usually the camera being raised and lowered.
+SAMPLE_POINTS = (0.10, 0.30, 0.50, 0.70, 0.90)
+
+
+def sample_video(path: str | Path, out_dir: str | Path, *,
+                 points: Sequence[float] = SAMPLE_POINTS) -> list[Path]:
+    """Extract several frames spread across a clip. Returns the ones that worked.
+
+    Sampling several frames rather than one is the difference between judging a video
+    and judging its first second.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    duration = video_duration(path)
+    if duration is None:
+        # Unknown length: fall back to a single early frame rather than guessing.
+        single = out_dir / f"{Path(path).stem}_f0.jpg"
+        return [single] if video_frame(path, single, at_seconds=1.0) else []
+    frames: list[Path] = []
+    for i, fraction in enumerate(points):
+        target = out_dir / f"{Path(path).stem}_f{i}.jpg"
+        if video_frame(path, target, at_seconds=max(0.0, duration * fraction)):
+            frames.append(target)
+    return frames
+
+
+def filmstrip(frames: Sequence[Path], out: str | Path, *, height: int = 300) -> Path | None:
+    """Join sampled frames into one wide strip, so a clip reads as an arc.
+
+    A five-frame strip crushed into a square contact-sheet cell is illegible, so the
+    strip is built at its natural width and the sheet gives video its own wider tile.
+    """
+    if not frames:
+        return None
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    images = []
+    for f in frames:
+        try:
+            im = Image.open(f).convert("RGB")
+        except OSError:
+            continue
+        scale = height / im.height
+        images.append(im.resize((max(1, int(im.width * scale)), height), Image.LANCZOS))
+    if not images:
+        return None
+    total = sum(i.width for i in images) + 4 * (len(images) - 1)
+    strip = Image.new("RGB", (total, height), (12, 12, 14))
+    x = 0
+    for im in images:
+        strip.paste(im, (x, 0))
+        x += im.width + 4
+    strip.save(out, quality=88)
+    return out
+
+
 def video_frame(path: str | Path, out: str | Path, *, at_seconds: float = 1.0) -> bool:
     """Grab one frame from a video so it can be hashed and eyeballed like a photo.
 

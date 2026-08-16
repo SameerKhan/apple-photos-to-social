@@ -65,9 +65,12 @@ class Config:
     require_location_for_zones: bool = True
 
     thumbnail_edge: int = 900
-    # Rough per-asset size used only for the pre-export disk check. Photos
-    # derivatives from a modern iPhone run 5-8 MB.
+    # Rough per-asset sizes for the pre-export disk check. These must be separate:
+    # a photo derivative is single-digit MB, while a 4K video derivative is commonly
+    # 100-500 MB. Using the photo figure for both under-estimates a video run by
+    # 10x to 50x and fills the disk mid-export.
     assumed_bytes_per_asset: int = 8_000_000
+    assumed_bytes_per_video: int = 200_000_000
     min_free_bytes: int = 5_000_000_000
 
     voice_guides: list[str] = field(default_factory=list)
@@ -155,6 +158,8 @@ def load_config(path: str | Path | None = None) -> Config:
         cfg.min_free_bytes = int(float(export["min_free_gb"]) * 1_000_000_000)
     if "assumed_mb_per_asset" in export:
         cfg.assumed_bytes_per_asset = int(float(export["assumed_mb_per_asset"]) * 1_000_000)
+    if "assumed_mb_per_video" in export:
+        cfg.assumed_bytes_per_video = int(float(export["assumed_mb_per_video"]) * 1_000_000)
 
     if cfg.default_days <= 0:
         raise ValueError("review.default_days must be positive")
@@ -164,6 +169,8 @@ def load_config(path: str | Path | None = None) -> Config:
         raise ValueError("export.min_free_gb must not be negative")
     if cfg.assumed_bytes_per_asset <= 0:
         raise ValueError("export.assumed_mb_per_asset must be positive")
+    if cfg.assumed_bytes_per_video <= 0:
+        raise ValueError("export.assumed_mb_per_video must be positive")
     if cfg.history_max_distance < 0:
         raise ValueError("review.history_max_distance must not be negative")
 

@@ -316,7 +316,8 @@ def run_review(cfg: Config, *, days: int | None = None, since: datetime | None =
         if dry_run or not candidates:
             return result
 
-        _check_disk_budget(cfg, len(candidates))
+        _check_disk_budget(cfg, len(candidates),
+                           videos=sum(1 for a in candidates if a.kind == 'video'))
 
         run_id = ledger.start_run(window=_window_label(window))
         recorded = 0
@@ -348,6 +349,7 @@ def run_review(cfg: Config, *, days: int | None = None, since: datetime | None =
             repair_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
             _harden(repair_dir, 0o700)
             diagnoses: dict[str, quality.Diagnosis] = {}
+            filmstrips: dict[str, Path] = {}
             repairs: dict[str, Path] = {}
             frames: list[imaging.Frame] = []
             for a in candidates:
@@ -359,10 +361,19 @@ def run_review(cfg: Config, *, days: int | None = None, since: datetime | None =
                 thumb = thumb_dir / f"{ps.uuid_to_dirname(a.uuid)}.jpg"
                 try:
                     if a.kind == "video":
-                        grabbed = thumb_dir / f"{ps.uuid_to_dirname(a.uuid)}_frame.jpg"
-                        if not imaging.video_frame(src, grabbed):
+                        # Sample across the clip, keep the sharpest frame as the
+                        # representative, and build a strip so the arc is visible.
+                        samples = imaging.sample_video(
+                            src, thumb_dir / f"{ps.uuid_to_dirname(a.uuid)}_frames")
+                        if not samples:
                             continue
-                        imaging.downscale(grabbed, thumb, cfg.thumbnail_edge)
+                        best = max(samples, key=lambda f: imaging.dhash(f) and _detail(f))
+                        imaging.downscale(best, thumb, cfg.thumbnail_edge)
+                        strip = imaging.filmstrip(
+                            samples, run_dir / "filmstrips" /
+                            f"{ps.uuid_to_dirname(a.uuid)}.jpg")
+                        if strip:
+                            filmstrips[a.uuid] = strip
                     else:
                         imaging.downscale(src, thumb, cfg.thumbnail_edge)
                     h = imaging.dhash(thumb)
@@ -405,9 +416,15 @@ def run_review(cfg: Config, *, days: int | None = None, since: datetime | None =
             frames = screen_against_history(frames, ledger, cfg, result, by_uuid)
 
             say("Clustering bursts")
-            clusters = imaging.cluster_bursts(
-                frames, max_distance=cfg.burst_max_distance,
-                max_gap_seconds=cfg.burst_max_gap_seconds)
+            # Photos and videos are clustered separately. A still and a clip of the
+            # same scene are two different posts, not one duplicated moment.
+            kinds = {a.uuid: a.kind for a in candidates}
+            clusters = []
+            for kind in ("photo", "video"):
+                subset = [f for f in frames if kinds.get(f.uuid, "photo") == kind]
+                clusters.extend(imaging.cluster_bursts(
+                    subset, max_distance=cfg.burst_max_distance,
+                    max_gap_seconds=cfg.burst_max_gap_seconds))
             reps = [c[0] for c in clusters]
             result.moments = len(clusters)
             result.burst_counts = {c[0].uuid: len(c) for c in clusters}
@@ -417,7 +434,8 @@ def run_review(cfg: Config, *, days: int | None = None, since: datetime | None =
             result.sheets = imaging.contact_sheets(
                 reps, run_dir / "sheets", counts=result.burst_counts)
             result.manifest_path = _write_manifest(
-                run_dir, reps, result.burst_counts, diagnoses, repairs)
+                run_dir, reps, result.burst_counts, diagnoses, repairs,
+                assets=by_uuid, filmstrips=filmstrips)
 
             # Everything that reached the eyeball stage is recorded, not just the
             # cluster representatives, or the non-representative burst frames come
@@ -452,7 +470,7 @@ def free_bytes(cfg: Config) -> int:
     return shutil.disk_usage(base if base.exists() else Path.home()).free
 
 
-def _check_disk_budget(cfg: Config, count: int) -> None:
+def _check_disk_budget(cfg: Config, count: int, videos: int = 0) -> None:
     """Refuse to start an export that could fill the disk.
 
     Exports also trigger iCloud downloads when the library is set to optimise
@@ -460,7 +478,8 @@ def _check_disk_budget(cfg: Config, count: int) -> None:
     """
     cfg.workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
     free = free_bytes(cfg)
-    projected = count * cfg.assumed_bytes_per_asset
+    photos = max(0, count - videos)
+    projected = photos * cfg.assumed_bytes_per_asset + videos * cfg.assumed_bytes_per_video
     if free - projected < cfg.min_free_bytes:
         raise RuntimeError(
             f"Refusing to export {count} assets: projected {projected / 1e9:.1f} GB would "
@@ -531,6 +550,14 @@ def _window_label(window: Sequence[ps.Asset]) -> str | None:
     return f"{lo:%Y-%m-%d}..{hi:%Y-%m-%d}"
 
 
+def _detail(path: Path) -> float:
+    """Rough sharpness used only to pick the best of several sampled video frames."""
+    d = quality.diagnose(path)
+    if d is None or d.sharpness != d.sharpness:
+        return 0.0
+    return d.sharpness
+
+
 def _face_box(path: Path) -> tuple[float, float, float, float] | None:
     """Face rectangle for exposure checking, if Vision is available."""
     from . import faces
@@ -543,7 +570,8 @@ def _face_box(path: Path) -> tuple[float, float, float, float] | None:
 
 def _write_manifest(run_dir: Path, frames: Sequence[imaging.Frame],
                     counts: dict[str, int], diagnoses: dict | None = None,
-                    repairs: dict | None = None) -> Path:
+                    repairs: dict | None = None, assets: dict | None = None,
+                    filmstrips: dict | None = None) -> Path:
     """Map contact-sheet numbers back to asset ids.
 
     Without this the sheets are unusable for follow-up: a reviewer says "#37" and
@@ -553,8 +581,9 @@ def _write_manifest(run_dir: Path, frames: Sequence[imaging.Frame],
     path = run_dir / "manifest.csv"
     with path.open("w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["index", "uuid", "filename", "captured_at", "burst_count",
-                    "ratio", "fits", "diagnosis", "repaired_file", "thumbnail"])
+        w.writerow(["index", "uuid", "filename", "captured_at", "kind", "favorite",
+                    "burst_count", "ratio", "fits", "diagnosis", "repaired_file",
+                    "filmstrip", "thumbnail"])
         for i, f in enumerate(frames, 1):
             ratio, fits = "", ""
             try:
@@ -575,8 +604,11 @@ def _write_manifest(run_dir: Path, frames: Sequence[imaging.Frame],
                 pass
             d = (diagnoses or {}).get(f.uuid)
             rep = (repairs or {}).get(f.uuid)
+            a = (assets or {}).get(f.uuid)
+            strip = (filmstrips or {}).get(f.uuid)
             w.writerow([i, f.uuid, f.filename, f.captured_at.isoformat(),
+                        a.kind if a else "", "yes" if (a and a.favorite) else "",
                         counts.get(f.uuid, 1), ratio, fits,
                         d.summary() if d else "", str(rep) if rep else "",
-                        str(f.path)])
+                        str(strip) if strip else "", str(f.path)])
     return path

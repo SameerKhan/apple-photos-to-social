@@ -882,3 +882,103 @@ def test_face_placement_actually_moves_the_crop(tmp_path, monkeypatch):
     with Image.open(high) as a1, Image.open(low) as a2:
         assert np.asarray(a1).mean() != np.asarray(a2).mean(), \
             "focus point did not change which pixels were kept"
+
+
+# --------------------------------------------------------------------------
+# v0.3: publication events, metadata cache, video sizing, mark-sheet
+# --------------------------------------------------------------------------
+
+def test_publications_are_appended_not_overwritten(tmp_path):
+    # REGRESSION: assets.destination is a single column, so posting the same photo to
+    # two platforms overwrote the first and lost its timestamp.
+    with L.Ledger(tmp_path / "l.db") as led:
+        _rec(led, "a/L0/001", status=L.SEEN)
+        led.set_status("a/L0/001", L.POSTED, destination="instagram")
+        led.set_status("a/L0/001", L.POSTED, destination="facebook")
+        pubs = led.publications()
+        assert len(pubs) == 2
+        assert {p[1] for p in pubs} == {"instagram", "facebook"}
+        assert all(p[2] for p in pubs), "every publication needs a timestamp"
+
+
+def test_posting_without_destination_logs_no_publication(tmp_path):
+    with L.Ledger(tmp_path / "l.db") as led:
+        _rec(led, "a/L0/001")
+        led.set_status("a/L0/001", L.POSTED)
+        assert led.publications() == []
+
+
+def test_asset_cache_roundtrip_and_replace(tmp_path):
+    with L.Ledger(tmp_path / "l.db") as led:
+        rows = [("u1/L0/001", "a.jpg", "2026-01-01T00:00:00", True, 100, 200),
+                ("u2/L0/001", "b.jpg", "2026-01-02T00:00:00", False, 300, 400)]
+        assert led.cache_assets(rows) == 2
+        assert led.cache_size() == 2
+        got = {r[0]: r for r in led.cached_assets()}
+        assert got["u1/L0/001"][3] is True and got["u2/L0/001"][3] is False
+        # caching again REPLACES rather than accumulating
+        assert led.cache_assets(rows[:1]) == 1
+        assert led.cache_size() == 1
+        led.clear_cache()
+        assert led.cache_size() == 0
+
+
+def test_video_disk_budget_is_not_costed_as_a_photo(tmp_path):
+    # REGRESSION: one figure was used for both. A 4K video derivative is 100-500 MB
+    # against an 8 MB photo, so a video run under-estimated by 10x to 50x and would
+    # fill the disk mid-export.
+    from photos_to_posts.review import _check_disk_budget
+    cfg = Config(workspace=tmp_path / "w", min_free_bytes=0,
+                 assumed_bytes_per_asset=8_000_000,
+                 assumed_bytes_per_video=200_000_000)
+    assert cfg.assumed_bytes_per_video > cfg.assumed_bytes_per_asset * 10
+    # 10 photos is affordable; 10 videos at 2 GB should trip a tight floor
+    cfg.min_free_bytes = 10**15
+    with pytest.raises(RuntimeError):
+        _check_disk_budget(cfg, 10, videos=10)
+
+
+def test_config_rejects_bad_video_size(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text("[export]\nassumed_mb_per_video = 0\n")
+    with pytest.raises(ValueError):
+        load_config(p)
+
+
+def test_sample_points_avoid_the_very_start_and_end():
+    # Grabbing 1.0s on a dive clip returns the surface of the water.
+    assert min(imaging.SAMPLE_POINTS) > 0.0
+    assert max(imaging.SAMPLE_POINTS) < 1.0
+    assert len(imaging.SAMPLE_POINTS) >= 3
+
+
+def test_filmstrip_joins_frames_side_by_side(tmp_path):
+    frames = []
+    for i in range(4):
+        p = tmp_path / f"f{i}.jpg"
+        Image.new("RGB", (200, 300), (i * 50, 40, 60)).save(p)
+        frames.append(p)
+    out = imaging.filmstrip(frames, tmp_path / "strip.jpg", height=150)
+    assert out is not None
+    with Image.open(out) as im:
+        assert im.height == 150
+        # four 200x300 frames scale to 100x150 each, so ~412px wide with the gaps
+        assert im.width > im.height * 2, "expected a wide strip, not a square"
+        assert im.width == pytest.approx(4 * 100 + 3 * 4, abs=8)
+    assert imaging.filmstrip([], tmp_path / "none.jpg") is None
+
+
+def test_filmstrip_survives_an_unreadable_frame(tmp_path):
+    good = tmp_path / "g.jpg"
+    Image.new("RGB", (100, 100), (10, 20, 30)).save(good)
+    bad = tmp_path / "b.jpg"
+    bad.write_text("not an image")
+    assert imaging.filmstrip([good, bad], tmp_path / "s.jpg") is not None
+
+
+def test_video_duration_returns_none_without_ffprobe(tmp_path, monkeypatch):
+    import shutil as _sh
+    monkeypatch.setattr(_sh, "which", lambda n: None)
+    p = tmp_path / "nope.mov"
+    p.write_bytes(b"not a video")
+    assert imaging.video_duration(p) is None

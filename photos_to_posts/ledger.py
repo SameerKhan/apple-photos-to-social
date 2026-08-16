@@ -75,6 +75,31 @@ CREATE TABLE IF NOT EXISTS status_history (
 );
 CREATE INDEX IF NOT EXISTS idx_history_uuid ON status_history(uuid);
 
+-- One row per actual publication. `assets.destination` holds only the most recent,
+-- so posting the same photo to two platforms used to silently overwrite the first and
+-- lose its timestamp. This is the durable record.
+CREATE TABLE IF NOT EXISTS publications (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid         TEXT NOT NULL,
+    destination  TEXT NOT NULL,
+    published_at TEXT NOT NULL,
+    note         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pub_uuid ON publications(uuid);
+CREATE INDEX IF NOT EXISTS idx_pub_dest ON publications(destination);
+
+-- Cache of library metadata. fetch_all_assets re-parses ~50k AppleScript records on
+-- every run, which is about a minute of wall clock before anything useful happens.
+CREATE TABLE IF NOT EXISTS asset_cache (
+    uuid        TEXT PRIMARY KEY,
+    filename    TEXT NOT NULL,
+    captured_at TEXT NOT NULL,
+    favorite    INTEGER NOT NULL DEFAULT 0,
+    width       INTEGER NOT NULL DEFAULT 0,
+    height      INTEGER NOT NULL DEFAULT 0,
+    cached_at   TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS runs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at  TEXT NOT NULL,
@@ -262,7 +287,61 @@ class Ledger:
             cur.execute(
                 "INSERT INTO status_history (uuid, old_status, new_status, reason, changed_at)"
                 " VALUES (?,?,?,?,?)", (uuid, row["status"], status, reason, now))
+            if status == POSTED and destination:
+                # Appended, never overwritten: the same photo may go to several
+                # platforms and each one is a separate event with its own timestamp.
+                cur.execute(
+                    "INSERT INTO publications (uuid, destination, published_at, note)"
+                    " VALUES (?,?,?,?)", (uuid, destination, now, note))
         return True
+
+    def record_publication(self, uuid: str, destination: str,
+                           note: str | None = None) -> None:
+        """Append a publication event. Multiple destinations per asset are expected."""
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO publications (uuid, destination, published_at, note)"
+                " VALUES (?,?,?,?)", (uuid, destination, _now(), note))
+
+    def publications(self, limit: int = 200) -> list[tuple[str, str, str, str | None]]:
+        """(uuid, destination, published_at, filename), most recent first."""
+        with closing(self.conn.cursor()) as cur:
+            return [(r[0], r[1], r[2], r[3]) for r in cur.execute(
+                "SELECT p.uuid, p.destination, p.published_at, a.filename"
+                " FROM publications p LEFT JOIN assets a ON a.uuid = p.uuid"
+                " ORDER BY p.published_at DESC LIMIT ?", (limit,))]
+
+    # ---- library metadata cache -------------------------------------------
+
+    def cache_assets(self, rows: Iterable[tuple[str, str, str, bool, int, int]]) -> int:
+        """Replace the cached library snapshot. Rows are (uuid, filename, captured_at,
+        favorite, width, height)."""
+        now = _now()
+        n = 0
+        with self.conn:
+            self.conn.execute("DELETE FROM asset_cache")
+            for uuid, filename, captured, fav, w, h in rows:
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO asset_cache"
+                    " (uuid, filename, captured_at, favorite, width, height, cached_at)"
+                    " VALUES (?,?,?,?,?,?,?)",
+                    (uuid, filename, captured, 1 if fav else 0, w, h, now))
+                n += 1
+        return n
+
+    def cached_assets(self) -> list[tuple[str, str, str, bool, int, int]]:
+        with closing(self.conn.cursor()) as cur:
+            return [(r[0], r[1], r[2], bool(r[3]), r[4], r[5]) for r in cur.execute(
+                "SELECT uuid, filename, captured_at, favorite, width, height"
+                " FROM asset_cache")]
+
+    def cache_size(self) -> int:
+        with closing(self.conn.cursor()) as cur:
+            return int(cur.execute("SELECT COUNT(*) FROM asset_cache").fetchone()[0])
+
+    def clear_cache(self) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM asset_cache")
 
     def start_run(self, window: str | None, note: str | None = None) -> int:
         with self.conn:

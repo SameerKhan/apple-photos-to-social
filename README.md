@@ -130,10 +130,15 @@ photos2social coverage             # how far back you have reviewed
 mapping each number back to an asset id, so you can act on "#37" afterwards:
 
 ```bash
-photos2social mark <uuid> shortlisted
-photos2social mark <uuid> posted --destination linkedin
-photos2social mark <uuid> excluded_private --note "family"
+photos2social mark-sheet latest 37 shortlisted
+photos2social mark-sheet latest 41 posted --destination instagram
+photos2social mark-sheet latest 12 excluded_private --note "family"
+photos2social report                       # what went where, and when
 ```
+
+`mark-sheet` takes the number printed on the tile. There is also `mark <uuid> ...` if
+you have the id, but copying a 36-character id out of a CSV is enough friction that
+the marking step stops happening, which quietly defeats the whole point of the ledger.
 
 Going back further, months later:
 
@@ -251,8 +256,9 @@ not safe; neither is auto-correcting all of it.
 
 - macOS only, and tied to the Photos app being scriptable.
 - No face or person filtering, as described above.
-- Videos need ffmpeg and are opt-in with `--include-videos`, since a frame has to be
-  extracted before anything can be judged.
+- Videos need ffmpeg and are opt-in with `--include-videos`. Five frames are sampled
+  across each clip rather than one at a fixed offset, since the first second of a dive
+  video is the surface. A filmstrip is written alongside so the arc is visible.
 - Exporting can trigger iCloud downloads if your library is set to optimise storage.
   The tool refuses to start a run that would leave less than a configurable amount of
   disk free, but it cannot know the true size in advance.

@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.3.0 (2026-08-16)
+
+Driven by a measured diagnosis: after all prior work the ledger held **13 of 49,513
+assets**, and 33% of a month's capture was video the tool never looked at.
+
+- **`mark-sheet <run> <index> <status>`.** The contact sheet prints `#37` but `mark`
+  wanted a 36-character asset id copied out of a CSV. That friction is why almost
+  nothing was ever marked. Accepts a run directory, a run number, or `latest`.
+- **`report`** shows what was published, where and when.
+- **Publication events are now their own table.** `assets.destination` held a single
+  string, so posting one photo to two platforms overwrote the first and lost its
+  timestamp.
+- **Video disk budgeting is separate from photos.** One figure was used for both; a 4K
+  video derivative is 100 to 500 MB against an 8 MB photo, so a video run
+  under-estimated free space by 10x to 50x and would have filled the disk mid-export.
+- **Video review samples across the clip** (five points between 10% and 90%) instead of
+  grabbing a single frame at 1.0s, which on a dive clip is the surface of the water.
+  Duration comes from ffprobe, the sharpest sample becomes the representative, and a
+  filmstrip is written so the arc of a clip is visible.
+- **Photos and videos cluster separately.** A still and a clip of the same scene are two
+  posts, not one duplicated moment.
+- **Library metadata can be cached in the ledger** rather than re-parsing ~50k
+  AppleScript records every run.
+- Manifest gains `kind`, `favorite` and `filmstrip` columns. `favorite` was already
+  being fetched and never used, and it is the only real human-preference signal
+  available.
+
+**Deliberately not built: a candidate scoring system.** Two independent reviews
+rejected it. "Clean beats flagged" contradicts this tool's own rule that a measurement
+cannot tell a defect from an intention, and a face-detection bonus would have
+systematically promoted family photographs on an unfiltered library. Sortable evidence
+columns instead of a number.
+
 ## 0.2.1 (2026-08-16)
 
 Hardening after adversarial review of 0.2.0.
