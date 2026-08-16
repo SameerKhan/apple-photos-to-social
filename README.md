@@ -58,6 +58,18 @@ What is available:
 - **A sticky ledger.** Once an asset is marked private, no automated run can undo
   that. Only an explicit `photos2social mark` command can, and every status change
   is recorded with a timestamp.
+- **A ledger that forgets what it only looked at.** The whole point of the ledger is
+  to stop re-reviewing the same photos, and recognising an asset needs equality, not
+  a description of it. So an asset you merely `seen` is stored as a salted hash of
+  its identifier plus a perceptual hash, with **no identifier, no filename and no
+  capture date**. The file will tell you that 4,000 photos have been reviewed; it
+  will not tell you, or anyone who opens it, which 4,000. Assets that record a
+  *decision* keep their plain identity, because a publication log that cannot say
+  what it published is useless and an exclusion nobody can audit is not an
+  exclusion.
+
+  The salt is generated per ledger and stored inside it, so digests from one library
+  cannot be matched against another or against a precomputed table.
 
 With no filters configured at all, the tool **refuses to run** unless you pass
 `--allow-unfiltered`. That is deliberate. Without it the default behaviour would be

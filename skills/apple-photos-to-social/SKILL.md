@@ -140,5 +140,11 @@ worked through, so you can pick up where the last pass stopped.
   The tool refuses to start if disk is tight, but a large window is still slow.
 - **The ledger is the value.** Anything that runs without recording results
   wastes the run.
+- **The ledger is opaque for assets it only looked at.** A `seen` row holds a salted
+  hash and a perceptual hash, never the identifier, filename or date. You can learn
+  how many photos were reviewed and nothing about which ones. Only `shortlisted`,
+  `posted`, `excluded_private` and `excluded_junk` stay legible. Do not add code that
+  writes identifying data onto a `seen` row, and always look assets up through
+  `ledger.digest()` rather than querying `assets.uuid` with a raw identifier.
 - Screenshots are excluded by default and are usually the single largest category
   of junk in a camera roll.
