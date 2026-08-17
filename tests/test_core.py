@@ -1151,3 +1151,39 @@ def test_migration_is_idempotent_from_a_half_migrated_state(tmp_path):
         assert row[0].startswith("sha256:") and row[1] is None
     with L.Ledger(path) as led:           # and opening again must be a no-op
         assert led.stats()["total"] == 1
+
+
+def test_summary_does_not_report_included_images_as_skipped():
+    # REGRESSION: auto_repaired and low_detail were listed in the "skipped:" dict.
+    # Neither is a skip. A run printing "skipped: ... very low detail 32" led to the
+    # conclusion that 32 photos had been dropped from review, when all 32 were in the
+    # contact sheets.
+    r = ReviewResult(window_days=30, total_in_library=100, in_window=10,
+                     exported=10, moments=10)
+    r.auto_repaired = 2
+    r.low_detail = 32
+    r.skipped_screenshot = 5
+    s = r.summary()
+    assert "skipped: screenshots 5" in s
+    assert "included: auto-repaired 2, flagged low detail 32" in s
+    skipped_part = s.split("skipped:")[1].split("|")[0]
+    assert "low detail" not in skipped_part and "repaired" not in skipped_part
+
+
+def test_sharpness_is_stable_across_image_scale(tmp_path):
+    # REGRESSION: raw Laplacian variance swung 48x across resolutions on one unchanged
+    # photograph (13 at 4032px, 625 at 800px), so "soft"/"low_detail" partly measured
+    # megapixels. Because those are judgement faults, the highest-resolution originals
+    # were the ones refused a colour-cast repair.
+    np = pytest.importorskip("numpy")
+    from photos_to_posts import quality
+    if not quality.available():
+        pytest.skip("numpy unavailable")
+    rng = np.random.default_rng(0)
+    big = Image.fromarray(rng.integers(0, 255, (2400, 1800, 3)).astype("uint8"))
+    scores = []
+    for w in (1800, 1200, 600):
+        p = tmp_path / f"s{w}.png"
+        big.resize((w, int(w * 2400 / 1800)), Image.LANCZOS).save(p)
+        scores.append(quality.diagnose(p).sharpness)
+    assert max(scores) / max(min(scores), 1e-6) < 2.0, scores

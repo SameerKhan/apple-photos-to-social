@@ -68,6 +68,11 @@ class ReviewResult:
             f"exported {self.exported:,}",
             f"moments {self.moments:,}",
         ]
+        # Only things genuinely LEFT OUT of the review belong here. "auto-repaired" and
+        # "very low detail" used to sit in this dict and printed under "skipped:", which
+        # is actively misleading: a repaired image was included AND improved, and a
+        # low-detail one was included and merely flagged for a closer look. Reading that
+        # line, a reviewer reasonably concludes that dozens of photos were discarded.
         skips = {
             "already reviewed": self.skipped_known,
             "seen before (visual match)": self.skipped_seen_before_visually,
@@ -77,14 +82,20 @@ class ReviewResult:
             "geofenced": self.skipped_zone,
             "location unknown": self.skipped_unknown_location,
             "not in allowlist": self.skipped_not_allowlisted,
-            "auto-repaired": self.auto_repaired,
-            "very low detail": self.low_detail,
             "videos deferred": self.videos_deferred,
             "export failed": self.export_failures,
+        }
+        # Included in the review; reported so the reviewer knows what to look at.
+        notes = {
+            "auto-repaired": self.auto_repaired,
+            "flagged low detail": self.low_detail,
         }
         dropped = ", ".join(f"{k} {v}" for k, v in skips.items() if v)
         if dropped:
             bits.append(f"skipped: {dropped}")
+        kept = ", ".join(f"{k} {v}" for k, v in notes.items() if v)
+        if kept:
+            bits.append(f"included: {kept}")
         return " | ".join(bits)
 
 

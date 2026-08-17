@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.4.1 (2026-08-17)
+
+**Sharpness was measuring megapixels.**
+
+Laplacian variance is not scale invariant, and the error was not small: one unchanged
+photograph from a real camera roll scored **13 at 4032px and 625 at 800px**, a 48x
+swing across resolutions. The `soft < 60` and `low_detail < 20` thresholds were
+therefore partly a function of file size.
+
+That mattered because both are *judgement* faults, and any judgement fault makes
+`repair()` refuse an image outright. The practical effect was backwards from the
+intent: the **highest-resolution originals were the ones denied a colour-cast repair**,
+for a reason that was an artifact of their dimensions.
+
+- Sharpness is now measured on a copy normalised to a fixed long edge
+  (`SHARPNESS_REF_PX = 1024`), so the number means the same thing for a 48MP original
+  and a 1080px export. Verified stable: the same image now scores 782, 782, 783, 792,
+  798, 787 across six sizes where it previously ranged 13 to 625.
+- Re-measured across 99 real exports, the flag counts fall from 28 `low_detail` and
+  31 `soft` to 0 and 5.
+
+**The run summary claimed images were skipped when they were not.**
+
+`auto-repaired` and `very low detail` were entries in the `skipped:` dict. Neither is a
+skip: a repaired image is included *and improved*, and a low-detail one is included and
+merely flagged. A run printing `skipped: ... very low detail 32` reads as thirty-two
+photographs discarded, when all thirty-two were in the contact sheets. They now print
+under `included:`.
+
 ## 0.4.0 (2026-08-16)
 
 **The ledger no longer remembers what it merely looked at.**

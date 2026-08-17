@@ -35,7 +35,20 @@ from pathlib import Path
 
 from PIL import Image
 
-__all__ = ["Diagnosis", "available", "diagnose", "repair", "AUTO_FIXABLE", "NEEDS_JUDGEMENT"]
+__all__ = ["Diagnosis", "available", "diagnose", "repair", "AUTO_FIXABLE", "NEEDS_JUDGEMENT",
+           "SHARPNESS_REF_PX"]
+
+# Laplacian variance is NOT scale invariant, and the error is enormous: measured on a
+# real camera roll, one unchanged photograph scored 13 at 4032px and 625 at 800px, a
+# 48x swing. Thresholds tuned against raw variance therefore measure megapixels as much
+# as they measure sharpness, and because "soft" and "low_detail" are judgement faults
+# that make repair() refuse an image outright, the practical effect was that the
+# HIGHEST resolution originals were the ones denied a colour-cast fix, for a reason
+# that was an artifact of their size.
+#
+# So sharpness is measured on a copy normalised to a fixed long edge. The number is then
+# comparable between a 48MP original and a 2MP export of the same frame.
+SHARPNESS_REF_PX = 1024
 
 # Faults with no plausible artistic reading AND a repair that genuinely helps.
 #
@@ -139,9 +152,9 @@ def diagnose(path: str | Path, face_box: tuple[float, float, float, float] | Non
     path = Path(path)
     try:
         with Image.open(path) as im:
-            im = im.convert("RGB")
-            w, h = im.size
-            arr = np.asarray(im, dtype=np.float32)
+            im_for_sharpness = im.convert("RGB")
+            w, h = im_for_sharpness.size
+            arr = np.asarray(im_for_sharpness, dtype=np.float32)
     except OSError:
         return None
 
@@ -156,12 +169,21 @@ def diagnose(path: str | Path, face_box: tuple[float, float, float, float] | Non
     d.shadow_clip = float(hist[:4].sum() / total * 100)
     d.highlight_clip = float(hist[252:].sum() / total * 100)
 
-    # Laplacian variance on full resolution. Downscaling destroys the signal.
-    # An image under 3px in either axis leaves an empty interior, and var() on an
-    # empty slice returns NaN. NaN then fails every comparison silently, so such an
-    # image would be treated as perfectly sharp. Skip the measure instead.
+    # Laplacian variance, measured at a FIXED reference size so the result means the
+    # same thing for a 48MP original and a 1080px export. See SHARPNESS_REF_PX.
+    #
+    # An image under 3px in either axis leaves an empty interior, and var() on an empty
+    # slice returns NaN. NaN then fails every comparison silently, so such an image
+    # would be treated as perfectly sharp. Skip the measure instead.
     if h >= 3 and w >= 3:
-        k = lum.astype(np.float32)
+        longest = max(w, h)
+        if longest > SHARPNESS_REF_PX:
+            scale = SHARPNESS_REF_PX / longest
+            ref = im_for_sharpness.resize(
+                (max(3, round(w * scale)), max(3, round(h * scale))), Image.LANCZOS)
+            k = _luma(np.asarray(ref, dtype=np.float32))
+        else:
+            k = lum.astype(np.float32)
         lap = -4 * k[1:-1, 1:-1] + k[:-2, 1:-1] + k[2:, 1:-1] + k[1:-1, :-2] + k[1:-1, 2:]
         d.sharpness = float(lap.var()) if lap.size else float("nan")
     else:
