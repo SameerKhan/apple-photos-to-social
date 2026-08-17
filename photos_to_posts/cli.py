@@ -260,8 +260,12 @@ def cmd_mark_sheet(args) -> int:
         return 1
 
     with Ledger(cfg.ledger_path) as ledger:
+        # The manifest holds the filename and capture time, so a decision made from a
+        # contact sheet can restore the identity that `seen` deliberately discarded.
         ok = ledger.set_status(row["uuid"], args.status, note=args.note,
-                               destination=args.destination)
+                               destination=args.destination,
+                               filename=row.get("filename") or None,
+                               captured_at=row.get("captured_at") or None)
     if not ok:
         print(f"#{args.index} ({row['filename']}) is not in the ledger yet",
               file=sys.stderr)

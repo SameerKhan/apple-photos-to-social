@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.4.2 (2026-08-17)
+
+**An automated pass could erase a human decision, and did.**
+
+`_write` protected only `TERMINAL` statuses, so a routine `review` run recorded
+`shortlisted` and `posted` assets back down to `seen`. This was not hypothetical: in the
+real ledger it wiped 14 shortlisted picks and **one `posted` record**, which is the
+publication log the whole legible-for-decisions rule exists to protect.
+
+- Added `STATUS_RANK`. An automated write may only move an asset UP the intent ladder;
+  only the explicit `set_status` path can move it down.
+
+**The downgrade also leaked identity.**
+
+The UPDATE used `COALESCE(?, plain_uuid)`, which keeps whatever was already stored. A
+row dropping to a non-legible status therefore retained the uuid and filename it was
+supposed to shed, and 13 `seen` rows in the real ledger ended up carrying identifying
+uuids. Identity is now assigned rather than coalesced, so the retention rule is applied
+in both directions, on promotion and on demotion.
+
+**Decisions could not name what they decided about.**
+
+`set_status` re-attached the uuid but never the filename or capture time, so 42
+`excluded_private` rows recorded an exclusion nobody could put a name to. `set_status`
+now accepts `filename` and `captured_at`, and `mark-sheet` passes both from the
+manifest it already has open.
+
 ## 0.4.1 (2026-08-17)
 
 **Sharpness was measuring megapixels.**

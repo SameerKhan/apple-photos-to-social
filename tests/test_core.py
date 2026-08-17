@@ -1187,3 +1187,54 @@ def test_sharpness_is_stable_across_image_scale(tmp_path):
         big.resize((w, int(w * 2400 / 1800)), Image.LANCZOS).save(p)
         scores.append(quality.diagnose(p).sharpness)
     assert max(scores) / max(min(scores), 1e-6) < 2.0, scores
+
+
+def _rec_id(led, uuid="U/L0/001", status=L.SEEN, **kw):
+    return led.record(uuid=uuid, filename=kw.pop("filename", "IMG_1.HEIC"),
+                      captured_at="2026-08-01T10:00:00", kind="photo", status=status, **kw)
+
+
+def test_an_automated_pass_never_downgrades_a_human_decision(tmp_path):
+    # REGRESSION: _write protected only TERMINAL statuses, so a routine review pass
+    # recorded shortlisted assets back down to `seen` and erased 13 real picks. The
+    # same path would have overwritten POSTED, destroying the publication log.
+    with L.Ledger(tmp_path / "l.db") as led:
+        _rec_id(led, status=L.SEEN)
+        led.set_status("U/L0/001", L.SHORTLISTED)
+        assert _rec_id(led, status=L.SEEN) == L.SHORTLISTED       # pass must not undo it
+
+        led.set_status("U/L0/001", L.POSTED, destination="instagram")
+        assert _rec_id(led, status=L.SEEN) == L.POSTED
+        assert _rec_id(led, status=L.SHORTLISTED) == L.POSTED
+
+        # but a genuine upgrade still lands
+        led.set_status("V/L0/001", L.SEEN) or _rec_id(led, uuid="V/L0/001")
+        assert _rec_id(led, uuid="V/L0/001", status=L.SHORTLISTED) == L.SHORTLISTED
+
+
+def test_dropping_to_a_non_legible_status_erases_identity(tmp_path):
+    # REGRESSION: the UPDATE used COALESCE(?, plain_uuid), so a row falling back to
+    # `seen` KEPT the uuid a legible status had attached. 13 rows in the real ledger
+    # ended up as `seen` while still carrying identifying uuids, which is exactly the
+    # leak the opaque ledger was built to prevent.
+    with L.Ledger(tmp_path / "l.db") as led:
+        _rec_id(led, status=L.SEEN)
+        led.set_status("U/L0/001", L.SHORTLISTED, filename="IMG_1.HEIC")
+        row = led.conn.execute("SELECT plain_uuid, filename FROM assets").fetchone()
+        assert row[0] == "U/L0/001" and row[1] == "IMG_1.HEIC"
+
+        led.set_status("U/L0/001", L.SEEN)          # explicit demotion
+        row = led.conn.execute("SELECT plain_uuid, filename FROM assets").fetchone()
+        assert row[0] is None and row[1] is None, "identity survived a demotion to seen"
+
+
+def test_marking_a_decision_restores_the_filename(tmp_path):
+    # A `seen` row has no filename by design. Deciding on it from a contact sheet
+    # should re-attach one, or the exclusion log cannot name what it excluded.
+    with L.Ledger(tmp_path / "l.db") as led:
+        _rec_id(led, status=L.SEEN, filename="IMG_9.HEIC")
+        assert led.conn.execute("SELECT filename FROM assets").fetchone()[0] is None
+        led.set_status("U/L0/001", L.EXCLUDED_PRIVATE, filename="IMG_9.HEIC",
+                       captured_at="2026-08-01T10:00:00", note="family")
+        r = led.conn.execute("SELECT filename, captured_at FROM assets").fetchone()
+        assert r[0] == "IMG_9.HEIC" and r[1] == "2026-08-01T10:00:00"

@@ -49,6 +49,16 @@ TERMINAL = frozenset({EXCLUDED_PRIVATE, EXCLUDED_JUNK})
 # SHORTLISTED is deliberately absent: a pick that was never published is still an
 # open decision, so it should come back until it is resolved either way.
 SETTLED = (SEEN, POSTED, EXCLUDED_PRIVATE, EXCLUDED_JUNK)
+
+# How much human intent a status represents. An AUTOMATED pass may only ever move an
+# asset UP this ladder; it must never undo a decision a person made.
+#
+# Protecting only TERMINAL was not enough, and the gap was not theoretical: a review
+# pass re-surfaced 13 shortlisted assets (correct, a shortlist is an open decision) and
+# then recorded them back down to `seen`, erasing the picks. The same path would have
+# quietly overwritten POSTED, destroying the publication log that the whole
+# legible-for-decisions rule exists to preserve.
+STATUS_RANK = {SEEN: 0, SHORTLISTED: 1, POSTED: 2, EXCLUDED_JUNK: 3, EXCLUDED_PRIVATE: 3}
 SETTLED_STRICT = (POSTED, EXCLUDED_PRIVATE, EXCLUDED_JUNK)
 
 # Statuses whose identifying details are kept in plaintext. A deliberate decision is
@@ -331,12 +341,17 @@ class Ledger:
             return status
 
         current = row["status"]
-        # Terminal states absorb automated writes. This is the privacy rule.
-        final = current if current in TERMINAL else status
+        # An automated write never moves an asset DOWN the intent ladder. Terminal
+        # states absorb everything (the privacy rule); shortlisted and posted are
+        # likewise protected from being reset to `seen` by a later review pass.
+        final = current if STATUS_RANK.get(current, 0) >= STATUS_RANK.get(status, 0) else status
         _, plain, fname, capd = self._identity(uuid, filename, cap, final)
+        # Identity is assigned, NOT coalesced. COALESCE keeps whatever was already
+        # there, so a row falling back to a non-legible status would silently retain
+        # the uuid and filename it is supposed to shed. Write the retention rule
+        # exactly, in both directions.
         cur.execute(
-            "UPDATE assets SET plain_uuid=COALESCE(?, plain_uuid),"
-            " filename=COALESCE(?, filename), captured_at=COALESCE(?, captured_at),"
+            "UPDATE assets SET plain_uuid=?, filename=?, captured_at=?,"
             " kind=?, status=?, phash=COALESCE(?, phash), note=COALESCE(?, note),"
             " destination=COALESCE(?, destination), updated_at=? WHERE uuid=?",
             (plain, fname, capd, kind, final, hexed, note, destination, now, key))
@@ -370,7 +385,9 @@ class Ledger:
         return n
 
     def set_status(self, uuid: str, status: str, *, note: str | None = None,
-                   destination: str | None = None, reason: str = "explicit") -> bool:
+                   destination: str | None = None, reason: str = "explicit",
+                   filename: str | None = None,
+                   captured_at: str | None = None) -> bool:
         """Force a status, including out of a terminal state.
 
         This is the only way to un-exclude something, and it is deliberately not
@@ -386,14 +403,22 @@ class Ledger:
             if row is None:
                 return False
             # Promoting to a legible status re-attaches the identity the caller holds.
-            # Details discarded earlier are gone and are not reconstructed.
-            plain = uuid if (status in LEGIBLE_STATUSES
-                             and not uuid.startswith("sha256:")) else None
+            # Pass filename/captured_at to restore those too: an exclusion you cannot
+            # put a name to is a weak audit trail, and the caller marking from a
+            # contact sheet has both to hand.
+            legible = status in LEGIBLE_STATUSES and not uuid.startswith("sha256:")
+            plain = uuid if legible else None
+            # Demoting to a non-legible status must ERASE the identity, not keep it.
+            fname = filename if legible else None
+            capd = captured_at if legible else None
             cur.execute(
-                "UPDATE assets SET status=?, plain_uuid=COALESCE(?, plain_uuid),"
+                "UPDATE assets SET status=?, plain_uuid=?,"
+                " filename=COALESCE(?, CASE WHEN ? THEN filename END),"
+                " captured_at=COALESCE(?, CASE WHEN ? THEN captured_at END),"
                 " note=COALESCE(?, note),"
                 " destination=COALESCE(?, destination), updated_at=? WHERE uuid=?",
-                (status, plain, note, destination, now, key))
+                (status, plain, fname, legible, capd, legible, note, destination,
+                 now, key))
             cur.execute(
                 "INSERT INTO status_history (uuid, old_status, new_status, reason, changed_at)"
                 " VALUES (?,?,?,?,?)", (key, row["status"], status, reason, now))
