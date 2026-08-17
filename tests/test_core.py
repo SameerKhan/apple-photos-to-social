@@ -256,9 +256,9 @@ def test_stats_and_coverage(led):
     _rec(led, "a/L0/001", status=L.POSTED)
     _rec(led, "b/L0/001", status=L.SEEN)
     assert led.stats()["total"] == 2
-    # Coverage counts only rows that kept a capture date, which by design is the
-    # decisions. A merely-seen asset contributes to dedup but not to the timeline.
-    assert led.coverage() == [("2026-01", 1)]
+    # Every row keeps a capture date now, seen included, so coverage describes the whole
+    # review history rather than only the assets that earned a decision.
+    assert led.coverage() == [("2026-01", 2)]
 
 
 # --------------------------------------------------------------------------
@@ -1023,15 +1023,17 @@ def test_export_script_raises_the_apple_event_timeout(monkeypatch, tmp_path):
 
 
 def test_seen_assets_keep_no_readable_identity(tmp_path):
-    # The retention rule Sameer chose: dedup still works, but a photo merely looked at
-    # leaves no filename, date or id behind.
+    # The retention rule Sameer chose, as revised 17 Aug 2026: a photo merely looked at
+    # leaves no filename and no id, but DOES leave its capture time, so `coverage` can
+    # honestly report which months have been reviewed.
     with L.Ledger(tmp_path / "l.db") as led:
         led.record(uuid="secret/L0/001", filename="IMG_PRIVATE.HEIC",
                    captured_at=datetime(2026, 5, 5), kind="photo", status=L.SEEN)
         row = led.conn.execute(
             "SELECT uuid, plain_uuid, filename, captured_at FROM assets").fetchone()
         assert row[0].startswith("sha256:")
-        assert row[1] is None and row[2] is None and row[3] is None
+        assert row[1] is None and row[2] is None, "seen must not keep uuid or filename"
+        assert row[3] == "2026-05-05T00:00:00", "seen keeps capture time, for coverage"
         # and yet the whole point still holds
         assert led.digest("secret/L0/001") in led.settled_uuids()
 
@@ -1224,8 +1226,12 @@ def test_dropping_to_a_non_legible_status_erases_identity(tmp_path):
         assert row[0] == "U/L0/001" and row[1] == "IMG_1.HEIC"
 
         led.set_status("U/L0/001", L.SEEN)          # explicit demotion
-        row = led.conn.execute("SELECT plain_uuid, filename FROM assets").fetchone()
+        row = led.conn.execute(
+            "SELECT plain_uuid, filename, captured_at FROM assets").fetchone()
         assert row[0] is None and row[1] is None, "identity survived a demotion to seen"
+        # Capture time is deliberately retained on every status so `coverage` can answer
+        # "which months have I been through". Sameer's explicit choice, 17 Aug 2026.
+        assert row[2] == "2026-08-01T10:00:00"
 
 
 def test_marking_a_decision_restores_the_filename(tmp_path):
@@ -1238,3 +1244,17 @@ def test_marking_a_decision_restores_the_filename(tmp_path):
                        captured_at="2026-08-01T10:00:00", note="family")
         r = led.conn.execute("SELECT filename, captured_at FROM assets").fetchone()
         assert r[0] == "IMG_9.HEIC" and r[1] == "2026-08-01T10:00:00"
+
+
+def test_seen_keeps_capture_time_but_never_the_identifier(tmp_path):
+    # Sameer's ruling 17 Aug 2026: a merely-seen asset records WHEN it was shot, so
+    # coverage is honest about which months have been reviewed, but still never records
+    # WHICH photo it was. Before this, seen rows had no date and `coverage` could only
+    # see the 94 of 257 rows that carried a decision.
+    with L.Ledger(tmp_path / "l.db") as led:
+        _rec_id(led, status=L.SEEN, filename="IMG_7.HEIC")
+        r = led.conn.execute(
+            "SELECT plain_uuid, filename, captured_at FROM assets").fetchone()
+        assert r[0] is None and r[1] is None
+        assert r[2] == "2026-08-01T10:00:00"
+        assert led.coverage() == [("2026-08", 1)]

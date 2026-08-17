@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.3 (2026-08-17)
+
+**`seen` rows now keep their capture time.**
+
+The opaque ledger discarded the capture date along with the identifier, which broke the
+question the ledger exists to answer. On a real ledger `coverage` could describe only
+94 of 257 rows, because the other 163 had no date, so the tool could not say which
+months it had already been through.
+
+Capture time is now retained for every status. A merely-seen asset still records no
+Photos identifier and no filename.
+
+The tradeoff was put to the owner explicitly and this is his ruling: an exact timestamp
+plus a perceptual hash makes a seen photo findable again by date. The README now states
+plainly that the retention rule limits what gets written down about choices you did not
+make, and is not an anonymity guarantee, particularly against anyone holding both the
+ledger and the library.
+
 ## 0.4.2 (2026-08-17)
 
 **An automated pass could erase a human decision, and did.**

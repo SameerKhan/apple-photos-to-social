@@ -316,11 +316,22 @@ class Ledger:
                                hexed, note, destination, reason, now)
 
     def _identity(self, uuid: str, filename: str, cap: str, status: str):
-        """(key, plain_uuid, filename, captured_at) for a row, per the retention rule."""
+        """(key, plain_uuid, filename, captured_at) for a row, per the retention rule.
+
+        **Capture time is kept for every status, including `seen`** (Sameer's call,
+        17 Aug 2026, chosen with the tradeoff stated). Without it `coverage` could only
+        describe the assets it had a decision for, which was 94 of 257 rows, so the tool
+        could not answer "which months have I already been through" — the question the
+        ledger exists to answer.
+
+        The cost is real and was accepted knowingly: an exact timestamp plus a
+        perceptual hash makes a merely-seen photo findable again by date in Photos. What
+        `seen` still never stores is the Photos identifier or the filename.
+        """
         key = self._digest(uuid)
         if status in LEGIBLE_STATUSES:
             return key, (None if uuid.startswith("sha256:") else uuid), filename, cap
-        return key, None, None, None
+        return key, None, None, cap
 
     def _write(self, cur, uuid, filename, cap, kind, status, hexed, note, destination,
                reason, now) -> str:
@@ -408,17 +419,17 @@ class Ledger:
             # contact sheet has both to hand.
             legible = status in LEGIBLE_STATUSES and not uuid.startswith("sha256:")
             plain = uuid if legible else None
-            # Demoting to a non-legible status must ERASE the identity, not keep it.
+            # Demoting to a non-legible status erases the uuid and the filename. Capture
+            # time survives on every status; see _identity for why.
             fname = filename if legible else None
-            capd = captured_at if legible else None
+            capd = captured_at
             cur.execute(
                 "UPDATE assets SET status=?, plain_uuid=?,"
                 " filename=COALESCE(?, CASE WHEN ? THEN filename END),"
-                " captured_at=COALESCE(?, CASE WHEN ? THEN captured_at END),"
+                " captured_at=COALESCE(?, captured_at),"
                 " note=COALESCE(?, note),"
                 " destination=COALESCE(?, destination), updated_at=? WHERE uuid=?",
-                (status, plain, fname, legible, capd, legible, note, destination,
-                 now, key))
+                (status, plain, fname, legible, capd, note, destination, now, key))
             cur.execute(
                 "INSERT INTO status_history (uuid, old_status, new_status, reason, changed_at)"
                 " VALUES (?,?,?,?,?)", (key, row["status"], status, reason, now))
