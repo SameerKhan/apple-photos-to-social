@@ -18,6 +18,7 @@ from PIL import Image
 
 from photos_to_posts import applescript as ps
 from photos_to_posts import imaging, ledger as L
+from photos_to_posts import review as R
 from photos_to_posts.config import Config, Zone, haversine_m, load_config
 from photos_to_posts.review import PrivacyRefusal, ReviewResult, apply_filters, select_window
 
@@ -1258,3 +1259,129 @@ def test_seen_keeps_capture_time_but_never_the_identifier(tmp_path):
         assert r[0] is None and r[1] is None
         assert r[2] == "2026-08-01T10:00:00"
         assert led.coverage() == [("2026-08", 1)]
+
+
+# --------------------------------------------------------------------------
+# Findings from the /tri-review of 17 Aug 2026
+# --------------------------------------------------------------------------
+
+def test_migration_keeps_capture_time_on_seen_rows(tmp_path):
+    # [codex+gemini P1] The opacity migration nulled captured_at for every non-legible
+    # row, so upgrading a pre-0.4 ledger silently and irreversibly destroyed the review
+    # history that `coverage` reads. Both external legs caught this; I did not.
+    import sqlite3
+    path = tmp_path / "legacy.db"
+    con = sqlite3.connect(path)
+    con.executescript("""
+        CREATE TABLE assets (
+            uuid TEXT PRIMARY KEY, filename TEXT NOT NULL, captured_at TEXT NOT NULL,
+            kind TEXT NOT NULL, phash TEXT, status TEXT NOT NULL, note TEXT,
+            destination TEXT, first_seen TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE status_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL, old_status TEXT,
+            new_status TEXT NOT NULL, reason TEXT, changed_at TEXT NOT NULL);
+        CREATE TABLE runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL,
+            finished_at TEXT, state TEXT NOT NULL DEFAULT 'running', window TEXT,
+            examined INTEGER NOT NULL DEFAULT 0, recorded INTEGER NOT NULL DEFAULT 0,
+            note TEXT);
+    """)
+    con.execute("INSERT INTO assets (uuid,filename,captured_at,kind,phash,status,"
+                "first_seen,updated_at) VALUES ('L/L0/001','A.HEIC','2026-03-09T08:00:00',"
+                "'photo','aa','seen','2026-03-09','2026-03-09')")
+    con.commit(); con.close()
+
+    with L.Ledger(path) as led:
+        r = led.conn.execute(
+            "SELECT plain_uuid, filename, captured_at FROM assets").fetchone()
+        assert r[0] is None and r[1] is None, "identity should be gone"
+        assert r[2] == "2026-03-09T08:00:00", "capture time must survive the migration"
+        assert led.coverage() == [("2026-03", 1)]
+
+
+def test_migration_drops_the_plaintext_library_cache(tmp_path):
+    # [codex P1] asset_cache is a snapshot of the LIBRARY with raw ids and filenames.
+    # Migrating without clearing it left the "opaque" ledger a fully readable photo
+    # inventory, defeating the entire retention rule.
+    with L.Ledger(tmp_path / "l.db") as led:
+        led.cache_assets([("X/L0/001", "SECRET.HEIC", "2026-01-01", False, 10, 10)])
+        assert led.cache_size() == 1
+        led.conn.execute("UPDATE assets SET uuid='raw/L0/001' WHERE 1=0")
+    # force the migration path to run again on the same file
+    with L.Ledger(tmp_path / "l.db") as led:
+        led.record(uuid="raw/L0/001", filename="B.HEIC", captured_at="2026-01-01T00:00:00",
+                   kind="photo", status=L.SEEN)
+        led.conn.execute("UPDATE assets SET uuid='raw/L0/001' WHERE uuid!='raw/L0/001'")
+        led.conn.commit()
+    with L.Ledger(tmp_path / "l.db") as led:
+        assert led.cache_size() == 0, "migration must not carry a plaintext inventory"
+
+
+def test_null_ledger_satisfies_every_call_the_pipeline_makes(tmp_path):
+    # [codex P1] review.py calls ledger.digest() per asset. _NullLedger lacked it, so
+    # `review --dry-run` on a fresh machine died with AttributeError before printing.
+    from photos_to_posts.review import _NullLedger
+    import inspect
+    n = _NullLedger()
+    assert n.digest("a/L0/001") == "a/L0/001"
+    src = inspect.getsource(R)
+    called = {m for m in ("digest", "settled_uuids", "uuids_with_status", "all_hashes",
+                          "record", "start_run") if f"ledger.{m}(" in src}
+    missing = [m for m in called if not hasattr(n, m)]
+    assert not missing, f"_NullLedger is missing {missing}"
+
+
+def test_an_automated_exclusion_outranks_posted_deliberately(tmp_path):
+    # [gemini] posted + an automated excluded_private lands on excluded_private. That is
+    # INTENDED: a privacy filter must be able to hide something already published. The
+    # publication event survives in its own table, so the history is not lost. Pinned so
+    # the choice is deliberate rather than accidental.
+    with L.Ledger(tmp_path / "l.db") as led:
+        _rec_id(led, status=L.SEEN)
+        led.set_status("U/L0/001", L.POSTED, destination="instagram",
+                       filename="IMG_1.HEIC")
+        assert _rec_id(led, status=L.EXCLUDED_PRIVATE) == L.EXCLUDED_PRIVATE
+        pubs = led.publications()
+        assert len(pubs) == 1 and pubs[0][1] == "instagram", "history must survive"
+
+
+def test_report_shows_the_retained_identity_not_the_digest(tmp_path):
+    # [codex P2] publications() returned the digest even when plain_uuid was retained,
+    # so `report` printed an opaque hash for an asset whose identity was kept on purpose.
+    with L.Ledger(tmp_path / "l.db") as led:
+        _rec_id(led, status=L.SEEN)
+        led.set_status("U/L0/001", L.POSTED, destination="facebook",
+                       filename="IMG_1.HEIC")
+        uuid, dest, _when, fname = led.publications()[0]
+        assert uuid == "U/L0/001", f"report would print {uuid}"
+        assert fname == "IMG_1.HEIC"
+
+
+def test_setting_status_by_digest_does_not_erase_identity(tmp_path):
+    # [codex P2] A digest identifies the row but cannot rebuild the identity, so
+    # treating it as "not legible" wiped an audit trail that could not be restored.
+    with L.Ledger(tmp_path / "l.db") as led:
+        _rec_id(led, status=L.SEEN)
+        led.set_status("U/L0/001", L.POSTED, filename="IMG_1.HEIC")
+        d = led.digest("U/L0/001")
+        led.set_status(d, L.EXCLUDED_PRIVATE, note="second thoughts")
+        r = led.conn.execute(
+            "SELECT status, plain_uuid, filename FROM assets").fetchone()
+        assert r[0] == L.EXCLUDED_PRIVATE
+        assert r[1] == "U/L0/001" and r[2] == "IMG_1.HEIC", "identity was erased"
+
+
+def test_identity_contract_holds_for_every_status(tmp_path):
+    # My own gap: mutating _write's identity assignment back to COALESCE did not fail
+    # any test, because STATUS_RANK already prevents the demotion that would expose it.
+    # The two fixes overlap, so pin the _identity contract directly instead.
+    with L.Ledger(tmp_path / "l.db") as led:
+        for status in (L.SEEN, L.SHORTLISTED, L.POSTED, L.EXCLUDED_JUNK,
+                       L.EXCLUDED_PRIVATE):
+            _key, plain, fname, cap = led._identity(
+                "Z/L0/001", "Z.HEIC", "2026-04-04T00:00:00", status)
+            assert cap == "2026-04-04T00:00:00", f"{status} must keep capture time"
+            if status in L.LEGIBLE_STATUSES:
+                assert plain == "Z/L0/001" and fname == "Z.HEIC", status
+            else:
+                assert plain is None and fname is None, f"{status} leaked identity"

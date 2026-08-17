@@ -71,6 +71,12 @@ What is available:
   The salt is generated per ledger and stored inside it, so digests from one library
   cannot be matched against another or against a precomputed table.
 
+  One more honest caveat: `asset_cache`, an optional snapshot of the library used to
+  avoid re-reading Photos, stores plain ids and filenames by design. Nothing in the
+  pipeline fills it today, the opacity migration clears it, and `clear_cache()` empties
+  it on demand, but if you populate it yourself the ledger file holds a readable
+  inventory again.
+
   **Be clear about what this does and does not protect.** It protects against someone
   reading the ledger file. It does not protect against someone who has the ledger AND
   the photo library, because they can re-derive every digest and match it back. And

@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.4.4 (2026-08-17)
+
+Six defects found by a three-model review of the 0.4.x work. Two were mine to be
+embarrassed about: I changed the retention rule and never revisited the migration that
+implements it.
+
+- **The migration destroyed review history.** Opening any pre-0.4 ledger nulled
+  `captured_at` on every `seen` row, irreversibly, which is precisely the coverage data
+  0.4.3 had just been written to preserve. Both external reviewers caught it; the local
+  leg did not.
+- **The migration left a plaintext library inventory.** `asset_cache` holds raw ids,
+  filenames and dates. Hashing `assets`, `status_history` and `publications` while
+  leaving it intact meant an "opaque" upgraded ledger was still a readable index of the
+  library. It is now cleared on migration, and the README says what the cache is.
+- **`review --dry-run` crashed on a fresh machine.** `_NullLedger` is the stand-in used
+  when no ledger exists, and it lacked the `digest()` method the pipeline calls per
+  asset, so the run died with `AttributeError` before printing anything.
+- **`report` printed a hash instead of a filename.** `publications()` returned the
+  digest even where the plain identity had been deliberately retained.
+- **Setting a status by digest erased identity.** A digest identifies a row but cannot
+  reconstruct what it points at, so treating it as non-legible wiped an audit trail that
+  could never be rebuilt. Digest-keyed updates now leave stored identity alone.
+- **An automated exclusion outranking `posted` is now deliberate and pinned.** A privacy
+  filter should be able to hide something already published; the publication event
+  survives in its own table, so the history is not lost.
+
 ## 0.4.3 (2026-08-17)
 
 **`seen` rows now keep their capture time.**

@@ -277,14 +277,25 @@ class Ledger:
                         "UPDATE assets SET uuid=?, plain_uuid=? WHERE uuid=?",
                         (digest, uuid, uuid))
                 else:
-                    # A merely-seen asset keeps no readable identity at all.
+                    # A merely-seen asset keeps no readable IDENTITY. It does keep its
+                    # capture time: that is what `coverage` reads, and nulling it here
+                    # silently destroyed the review history of every pre-0.4 ledger on
+                    # upgrade, irreversibly. Found by both review legs, 17 Aug 2026.
                     self.conn.execute(
-                        "UPDATE assets SET uuid=?, plain_uuid=NULL, filename=NULL,"
-                        " captured_at=NULL WHERE uuid=?", (digest, uuid))
+                        "UPDATE assets SET uuid=?, plain_uuid=NULL, filename=NULL"
+                        " WHERE uuid=?", (digest, uuid))
                 self.conn.execute("UPDATE status_history SET uuid=? WHERE uuid=?",
                                   (digest, uuid))
                 self.conn.execute("UPDATE publications SET uuid=? WHERE uuid=?",
                                   (digest, uuid))
+        # `asset_cache` is a snapshot of the LIBRARY, not a record of what was reviewed,
+        # so it holds raw ids, filenames and dates for everything it was given. Carrying
+        # that through an opacity migration would leave the upgraded file a fully
+        # readable photo inventory, which is the exact thing the migration claims to
+        # undo. Drop it; it is a rebuildable cache, and nothing in the pipeline fills it
+        # today. See the retention note in the README.
+        with self.conn:
+            self.conn.execute("DELETE FROM asset_cache")
 
     def __enter__(self) -> "Ledger":
         return self
@@ -417,8 +428,27 @@ class Ledger:
             # Pass filename/captured_at to restore those too: an exclusion you cannot
             # put a name to is a weak audit trail, and the caller marking from a
             # contact sheet has both to hand.
-            legible = status in LEGIBLE_STATUSES and not uuid.startswith("sha256:")
+            # A caller may legitimately pass a digest (from publications(),
+            # known_uuids(), or Record.uuid). It identifies the row but cannot
+            # reconstruct the identity, so in that case leave whatever is stored alone
+            # rather than clearing an audit trail we simply cannot rebuild.
+            by_digest = uuid.startswith("sha256:")
+            legible = status in LEGIBLE_STATUSES and not by_digest
             plain = uuid if legible else None
+            if by_digest:
+                cur.execute(
+                    "UPDATE assets SET status=?, note=COALESCE(?, note),"
+                    " destination=COALESCE(?, destination), updated_at=? WHERE uuid=?",
+                    (status, note, destination, now, key))
+                cur.execute(
+                    "INSERT INTO status_history (uuid, old_status, new_status, reason,"
+                    " changed_at) VALUES (?,?,?,?,?)",
+                    (key, row["status"], status, reason, now))
+                if status == POSTED and destination:
+                    cur.execute(
+                        "INSERT INTO publications (uuid, destination, published_at, note)"
+                        " VALUES (?,?,?,?)", (key, destination, now, note))
+                return True
             # Demoting to a non-legible status erases the uuid and the filename. Capture
             # time survives on every status; see _identity for why.
             fname = filename if legible else None
@@ -453,7 +483,8 @@ class Ledger:
         """(uuid, destination, published_at, filename), most recent first."""
         with closing(self.conn.cursor()) as cur:
             return [(r[0], r[1], r[2], r[3]) for r in cur.execute(
-                "SELECT p.uuid, p.destination, p.published_at, a.filename"
+                "SELECT COALESCE(a.plain_uuid, p.uuid), p.destination,"
+                " p.published_at, a.filename"
                 " FROM publications p LEFT JOIN assets a ON a.uuid = p.uuid"
                 " ORDER BY p.published_at DESC LIMIT ?", (limit,))]
 

@@ -537,6 +537,15 @@ class _NullLedger:
     def __exit__(self, *exc):
         return False
 
+    def digest(self, uuid: str) -> str:
+        """Identity function. The history is empty, so no lookup can match anyway.
+
+        Its absence made `review --dry-run` raise AttributeError on a fresh machine,
+        at the first asset in the window, before printing anything. Every method the
+        pipeline calls on a Ledger has to exist here.
+        """
+        return uuid
+
     def settled_uuids(self, include_seen: bool = True) -> set[str]:
         return set()
 
