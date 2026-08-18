@@ -1385,3 +1385,51 @@ def test_identity_contract_holds_for_every_status(tmp_path):
                 assert plain == "Z/L0/001" and fname == "Z.HEIC", status
             else:
                 assert plain is None and fname is None, f"{status} leaked identity"
+
+
+def test_a_published_photo_suppresses_its_near_neighbours(tmp_path):
+    # REGRESSION, and Sameer caught it: two frames from one studio session sat 7 apart.
+    # history_max_distance was 6, so the second was offered as a fresh candidate AFTER
+    # the first had already been published. Meanwhile burst_max_distance was 12, so the
+    # very same pair WOULD have collapsed into one moment inside a single run. The two
+    # thresholds disagreed and the photo fell through the gap.
+    cfg = Config()
+    assert cfg.published_max_distance >= cfg.burst_max_distance, (
+        "a pair that collapses into one moment within a run must also match across runs")
+
+    led = L.Ledger(tmp_path / "l.db")
+    a, b = 0x0000000000000000, 0x00000000000000FF     # distance 8: >6, <12
+    assert L.hamming(a, b) == 8
+    led.record(uuid="posted/L0/001", filename="A.HEIC", captured_at="2026-07-28T20:41:00",
+               kind="photo", status=L.SEEN, phash=a)
+    led.set_status("posted/L0/001", L.POSTED, destination="instagram", filename="A.HEIC")
+
+    frame = imaging.Frame(uuid="new/L0/001", path=tmp_path / "b.jpg", filename="B.HEIC",
+                          phash=b, captured_at=None)
+    res = R.ReviewResult(window_days=30, total_in_library=1, in_window=1)
+    asset = ps.Asset(uuid="new/L0/001", filename="B.HEIC",
+                     captured_at=datetime(2026, 7, 28, 20, 42),
+                     favorite=False, width=1080, height=1616)
+    kept = R.screen_against_history([frame], led, cfg, res, {"new/L0/001": asset})
+    assert kept == [], "a near-neighbour of a PUBLISHED photo was offered again"
+    assert res.skipped_seen_before_visually == 1
+    led.close()
+
+
+def test_a_merely_seen_photo_keeps_the_tighter_radius(tmp_path):
+    # The wider radius must apply to decisions only. Something glanced at should not
+    # blanket-suppress everything within 12 of it, or real candidates go missing.
+    cfg = Config()
+    led = L.Ledger(tmp_path / "l.db")
+    a, b = 0x0000000000000000, 0x00000000000000FF     # distance 8
+    led.record(uuid="seen/L0/001", filename="A.HEIC", captured_at="2026-07-28T20:41:00",
+               kind="photo", status=L.SEEN, phash=a)
+    frame = imaging.Frame(uuid="new/L0/001", path=tmp_path / "b.jpg", filename="B.HEIC",
+                          phash=b, captured_at=None)
+    res = R.ReviewResult(window_days=30, total_in_library=1, in_window=1)
+    asset = ps.Asset(uuid="new/L0/001", filename="B.HEIC",
+                     captured_at=datetime(2026, 7, 28, 20, 42),
+                     favorite=False, width=1080, height=1616)
+    kept = R.screen_against_history([frame], led, cfg, res, {"new/L0/001": asset})
+    assert len(kept) == 1, "distance 8 from a merely-seen photo should still surface"
+    led.close()

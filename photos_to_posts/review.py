@@ -22,8 +22,8 @@ from . import applescript as ps
 from . import imaging
 from . import quality
 from .config import Config, haversine_m
-from .ledger import (EXCLUDED_PRIVATE, SEEN, SETTLED, SETTLED_STRICT, TERMINAL,
-                     Ledger, hamming)
+from .ledger import (EXCLUDED_PRIVATE, POSTED, SEEN, SETTLED, SETTLED_STRICT,
+                     SHORTLISTED, TERMINAL, Ledger, hamming)
 
 TERMINAL_STATUSES = tuple(sorted(TERMINAL))
 
@@ -270,8 +270,17 @@ def screen_against_history(frames: Sequence[imaging.Frame], ledger: Ledger, cfg:
         # deliberately back in the candidate set, and matching it against itself
         # both drops it again and rewrites its status.
         own = ledger.digest(frame.uuid)
-        if any(hamming(stored, frame.phash) <= cfg.history_max_distance
-               for uuid, stored, _st in history if uuid != own):
+        # The radius depends on what the stored row MEANS. A near-neighbour of something
+        # already published is almost certainly the same picture and must not be
+        # re-proposed; a near-neighbour of something merely seen deserves a second look.
+        def _matches(uuid, stored, status):
+            if uuid == own:
+                return False
+            limit = (cfg.published_max_distance
+                     if status in (POSTED, SHORTLISTED) else cfg.history_max_distance)
+            return hamming(stored, frame.phash) <= limit
+
+        if any(_matches(uuid, stored, st) for uuid, stored, st in history):
             result.skipped_seen_before_visually += 1
             asset = assets.get(frame.uuid)
             if asset is not None:

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.5 (2026-08-18)
+
+**A photo already published was offered again as a fresh candidate.** Sameer caught it;
+the tool did not.
+
+Two frames from one studio session sat 7 apart by perceptual hash. `history_max_distance`
+was 6, so the cross-run screen treated them as unrelated and re-proposed the second after
+the first had gone out on Instagram. Meanwhile `burst_max_distance` was 12, meaning the
+very same pair WOULD have collapsed into a single moment had they appeared in one run.
+The two thresholds disagreed, and the photo fell straight through the gap between them.
+
+Underneath that, `screen_against_history` applied one flat radius to every status, so a
+photo you PUBLISHED suppressed its neighbours no more strongly than one you had merely
+glanced at.
+
+- New `review.published_max_distance` (default 12, must be >= `history_max_distance`,
+  enforced at config load). Rows in `posted` or `shortlisted` now screen at the wider
+  radius; merely-`seen` rows keep the tighter one, so real candidates still surface.
+
 ## 0.4.4 (2026-08-17)
 
 Six defects found by a three-model review of the 0.4.x work. Two were mine to be

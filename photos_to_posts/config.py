@@ -53,6 +53,13 @@ class Config:
     # before" against ledger history. Tighter than burst clustering because a
     # false positive here silently hides a photo you have never reviewed.
     history_max_distance: int = 6
+    # A photo you PUBLISHED should suppress its near-neighbours far more aggressively
+    # than one you merely looked at. Two studio frames 7 apart are the same picture to
+    # a viewer; at history_max_distance = 6 they were treated as unrelated and one was
+    # re-proposed after the other had already gone out. Defaults to the burst radius,
+    # because a pair that would collapse into one moment INSIDE a run must not count as
+    # two different photos ACROSS runs.
+    published_max_distance: int = 12
 
     exclude_albums: list[str] = field(default_factory=list)
     # Allowlist. When non-empty, ONLY assets in these albums are ever
@@ -128,6 +135,8 @@ def load_config(path: str | Path | None = None) -> Config:
     cfg.resurface_seen = bool(review.get("resurface_seen", cfg.resurface_seen))
     cfg.allow_unfiltered = bool(review.get("allow_unfiltered", cfg.allow_unfiltered))
     cfg.history_max_distance = int(review.get("history_max_distance", cfg.history_max_distance))
+    cfg.published_max_distance = int(
+        review.get("published_max_distance", cfg.published_max_distance))
 
     privacy = raw.get("privacy", {})
     cfg.exclude_albums = list(privacy.get("exclude_albums", []))
@@ -173,6 +182,10 @@ def load_config(path: str | Path | None = None) -> Config:
         raise ValueError("export.assumed_mb_per_video must be positive")
     if cfg.history_max_distance < 0:
         raise ValueError("review.history_max_distance must not be negative")
+    if cfg.published_max_distance < cfg.history_max_distance:
+        raise ValueError("review.published_max_distance must be >= history_max_distance:"
+                         " something already published cannot be screened more loosely"
+                         " than something merely seen")
 
     voice = raw.get("voice", {})
     cfg.voice_guides = list(voice.get("guides", []))
