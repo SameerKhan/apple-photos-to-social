@@ -95,6 +95,10 @@ def build_parser() -> argparse.ArgumentParser:
     purge = sub.add_parser("purge", help="delete exported pixels, keep the ledger")
     _add_common(purge)
     purge.add_argument("--yes", action="store_true", help="do not prompt")
+    purge.add_argument("--all", action="store_true",
+                       help="also delete the manifests. They map contact-sheet numbers "
+                            "back to assets and CANNOT be rebuilt; without them a "
+                            "decision recorded later has no filename.")
     return p
 
 
@@ -369,15 +373,55 @@ def cmd_purge(args) -> int:
     if not cfg.workspace.exists():
         print("nothing to purge")
         return 0
-    size = sum(f.stat().st_size for f in cfg.workspace.rglob("*") if f.is_file())
+    # Pixels are rebuildable; a manifest is not. It is the only record mapping a contact
+    # sheet number back to an asset, and deleting one is unrecoverable: on 17 Aug 2026 a
+    # purge for disk space destroyed the manifests that held the filenames of a POSTED
+    # and a SHORTLISTED asset, and those names could never be restored.
+    PIXEL_DIRS = ("export", "thumbs", "filmstrips", "repaired", "sheets")
+    KEEP = "manifest.csv"
+
+    def _pixels():
+        for run in sorted(cfg.workspace.glob("run_*")):
+            for sub in PIXEL_DIRS:
+                d = run / sub
+                if d.exists():
+                    yield d
+        # anything outside a run directory is scratch
+        for f in cfg.workspace.iterdir():
+            if f.is_file():
+                yield f
+
+    targets = list(_pixels())
+    size = sum(f.stat().st_size for d in targets
+               for f in ([d] if d.is_file() else d.rglob("*")) if f.is_file())
+    kept = len(list(cfg.workspace.glob(f"run_*/{KEEP}")))
+
+    if args.all:
+        size = sum(f.stat().st_size for f in cfg.workspace.rglob("*") if f.is_file())
+        if not args.yes:
+            reply = input(f"Delete EVERYTHING in {cfg.workspace} ({size / 1e6:.0f} MB), "
+                          f"INCLUDING {kept} manifest(s)? Those are unrecoverable and "
+                          f"the ledger cannot rebuild them. [y/N] ")
+            if reply.strip().lower() not in {"y", "yes"}:
+                print("cancelled")
+                return 1
+        shutil.rmtree(cfg.workspace)
+        print(f"purged {size / 1e6:.0f} MB from {cfg.workspace}, manifests included")
+        return 0
+
     if not args.yes:
-        reply = input(f"Delete {cfg.workspace} ({size / 1e6:.0f} MB of exported "
-                      f"photos)? The ledger is kept. [y/N] ")
+        reply = input(f"Delete {size / 1e6:.0f} MB of exported pixels from "
+                      f"{cfg.workspace}? {kept} manifest(s) and the ledger are kept. "
+                      f"[y/N] ")
         if reply.strip().lower() not in {"y", "yes"}:
             print("cancelled")
             return 1
-    shutil.rmtree(cfg.workspace)
-    print(f"purged {size / 1e6:.0f} MB from {cfg.workspace}")
+    for d in targets:
+        if d.is_file():
+            d.unlink()
+        else:
+            shutil.rmtree(d)
+    print(f"purged {size / 1e6:.0f} MB of pixels, kept {kept} manifest(s)")
     return 0
 
 

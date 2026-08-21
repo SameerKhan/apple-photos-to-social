@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.7 (2026-08-22)
+
+**`purge` destroyed manifests, and that loss is permanent.**
+
+It ran `rmtree` on the whole workspace. Used to free disk on 17 Aug 2026, it deleted the
+run manifests that held the filenames of a `posted` and a `shortlisted` asset. The ledger
+keeps identity only for decisions made *while* a manifest is present, so those two names
+could not be reconstructed from anything, and `report` still prints a digest for one of
+them.
+
+Pixels are rebuildable in a minute; a manifest is the only map from a contact-sheet number
+back to an asset.
+
+- `purge` now deletes only `export/`, `thumbs/`, `filmstrips/`, `repaired/` and `sheets/`,
+  and reports how many manifests it kept.
+- `purge --all` restores the old behaviour, behind a prompt that names what is about to
+  become unrecoverable.
+
 ## 0.4.6 (2026-08-22)
 
 **Every "face-aware" crop this tool has produced was not face-aware.** PyObjC was never

@@ -9,6 +9,7 @@ and was caught in review. Those are marked with a REGRESSION comment.
 """
 from __future__ import annotations
 
+import argparse
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1482,3 +1483,27 @@ def test_review_announces_when_face_detection_is_off(monkeypatch, tmp_path):
     except RuntimeError:
         pass
     assert any("face detection unavailable" in m for m in said), said
+
+
+def test_purge_keeps_manifests_by_default(tmp_path, monkeypatch, capsys):
+    # REGRESSION: purge did rmtree on the whole workspace. Used for disk space on
+    # 17 Aug 2026 it destroyed the manifests holding the filenames of a POSTED and a
+    # SHORTLISTED asset. Pixels rebuild; a manifest does not.
+    from photos_to_posts import cli
+    ws = tmp_path / "work"
+    run = ws / "run_00001"
+    (run / "export" / "a").mkdir(parents=True)
+    (run / "export" / "a" / "p.jpeg").write_bytes(b"x" * 2048)
+    (run / "thumbs").mkdir(); (run / "thumbs" / "t.jpg").write_bytes(b"y" * 512)
+    (run / "sheets").mkdir(); (run / "sheets" / "s.jpg").write_bytes(b"z" * 512)
+    (run / "manifest.csv").write_text("index,uuid,filename\n1,A/L0/001,IMG_1.HEIC\n")
+
+    cfg = Config(); cfg.workspace = ws
+    monkeypatch.setattr(cli, "load_config", lambda _p=None: cfg)
+    rc = cli.cmd_purge(argparse.Namespace(config=None, yes=True, all=False))
+    assert rc == 0
+    assert (run / "manifest.csv").exists(), "the manifest was destroyed"
+    assert not (run / "export").exists() and not (run / "thumbs").exists()
+
+    rc = cli.cmd_purge(argparse.Namespace(config=None, yes=True, all=True))
+    assert rc == 0 and not ws.exists(), "--all should remove everything"
