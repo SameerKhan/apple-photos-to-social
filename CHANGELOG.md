@@ -11,6 +11,8 @@ dependency present, the same photograph yields three detected faces.
 
 - `doctor` now reports face-detection availability and prints the flags to install it.
 - The README's run command includes the Vision extras.
+- Every `review` run now prints a notice when detection is unavailable, so the
+  degradation can never again be invisible for a month.
 
 **A padded cover looks fine in the post and terrible in the profile grid.** Sameer spotted
 this on his own grid. Instagram renders the grid thumbnail as a CENTRE SQUARE crop, so

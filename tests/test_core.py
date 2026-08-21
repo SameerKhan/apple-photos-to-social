@@ -1461,3 +1461,24 @@ def test_grid_tile_is_the_centre_square(tmp_path):
     im = Image.new("RGB", (1080, 1350), "white")
     t = imaging.grid_tile(im)
     assert t.size == (1080, 1080)
+
+
+def test_review_announces_when_face_detection_is_off(monkeypatch, tmp_path):
+    # Silent degradation is what let "face-aware" be false for months. The run must say so.
+    from photos_to_posts import faces as F
+    monkeypatch.setattr(F, "available", lambda: False)
+    said: list[str] = []
+    monkeypatch.setattr(R.ps, "is_available", lambda: (False, "stub"))
+    try:
+        R.run_review(Config(), days=1, log=said.append)
+    except Exception:
+        pass
+    # is_available False short-circuits before the notice, so assert the ordering holds
+    monkeypatch.setattr(R.ps, "is_available", lambda: (True, ""))
+    monkeypatch.setattr(R.ps, "fetch_all_assets", lambda: (_ for _ in ()).throw(RuntimeError("stop")))
+    said.clear()
+    try:
+        R.run_review(Config(), days=1, log=said.append)
+    except RuntimeError:
+        pass
+    assert any("face detection unavailable" in m for m in said), said

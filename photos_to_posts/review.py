@@ -308,6 +308,14 @@ def run_review(cfg: Config, *, days: int | None = None, since: datetime | None =
     if not ok:
         raise ps.PhotosError(f"Cannot talk to the Photos app: {why}")
 
+    # Say it every run. Face detection failing open is correct; failing SILENTLY meant
+    # months of crops were described as face-aware while using a fixed fraction, which
+    # clips heads on landscape frames.
+    from . import faces as _faces
+    if not _faces.available():
+        say("NOTE: face detection unavailable, crops will use a fixed top fraction. "
+            "Add --with pyobjc-framework-Vision --with pyobjc-framework-Quartz")
+
     say("Reading library metadata from Photos")
     assets = ps.fetch_all_assets()
     window = select_window(assets, days=days or cfg.default_days, since=since, until=until)
