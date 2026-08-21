@@ -1433,3 +1433,31 @@ def test_a_merely_seen_photo_keeps_the_tighter_radius(tmp_path):
     kept = R.screen_against_history([frame], led, cfg, res, {"new/L0/001": asset})
     assert len(kept) == 1, "distance 8 from a merely-seen photo should still surface"
     led.close()
+
+
+def test_a_padded_cover_is_not_grid_safe(tmp_path):
+    # REGRESSION, Sameer spotted it on his own grid: a landscape selfie padded into 4:5
+    # keeps the whole frame in the POST but puts blurred bars straight through the middle
+    # of the SQUARE grid thumbnail. On the cover that shipped, 44% of the tile was padding.
+    pytest.importorskip("numpy")
+    from PIL import Image
+    import numpy as np
+    rng = np.random.default_rng(1)
+    photo = Image.fromarray(rng.integers(0, 255, (600, 1080, 3)).astype("uint8"))
+    padded = Image.new("RGB", (1080, 1350), (128, 128, 128))
+    padded.paste(photo, (0, (1350 - 600) // 2))
+    p = tmp_path / "padded.jpg"; padded.save(p, quality=95)
+    frac = imaging.cover_padding_fraction(p)
+    assert frac > 0.3, f"padding not detected, got {frac:.2f}"
+    assert not imaging.is_grid_safe(p)
+
+    full = Image.fromarray(rng.integers(0, 255, (1350, 1080, 3)).astype("uint8"))
+    q = tmp_path / "full.jpg"; full.save(q, quality=95)
+    assert imaging.is_grid_safe(q), "a full-bleed cover should pass"
+
+
+def test_grid_tile_is_the_centre_square(tmp_path):
+    from PIL import Image
+    im = Image.new("RGB", (1080, 1350), "white")
+    t = imaging.grid_tile(im)
+    assert t.size == (1080, 1080)

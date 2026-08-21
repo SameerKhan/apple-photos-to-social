@@ -320,3 +320,51 @@ def hash_directory(paths: Sequence[Path], progress: Callable[[int, int], None] |
         if progress:
             progress(i, len(paths))
     return out
+
+
+# --- grid safety ------------------------------------------------------------
+
+#: Instagram renders a profile-grid thumbnail as a CENTRE SQUARE crop of the post.
+#: A 4:5 image therefore loses 20% of its height in the grid, and any letterboxing
+#: added to fit a landscape frame lands right in the middle of that tile.
+GRID_RATIO = 1.0
+
+
+def grid_tile(img):
+    """The centre square Instagram shows in the profile grid."""
+    w, h = img.size
+    side = min(w, h)
+    top = (h - side) // 2
+    return img.crop((0, top, w, top + side))
+
+
+def cover_padding_fraction(path: str | Path, *, tolerance: int = 6) -> float:
+    """How much of the grid tile is flat letterboxing rather than photograph.
+
+    Padding a landscape frame into 4:5 keeps the whole picture in the POST and then
+    puts blurred bars through the middle of the GRID tile. Measured on a real cover
+    that shipped: 44% of the tile was padding and the faces were half-size.
+
+    Detects near-uniform rows, which is what both blurred and solid bars look like
+    once they are averaged across the width. Returns 0.0 when the tile is all image.
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        return 0.0
+    with Image.open(path) as im:
+        tile = grid_tile(im.convert("RGB"))
+        arr = np.asarray(tile, dtype=np.float32)
+    # a padded bar has very little horizontal variation within each row
+    row_spread = arr.std(axis=1).mean(axis=1)
+    flat = int((row_spread < tolerance).sum())
+    return flat / arr.shape[0]
+
+
+def is_grid_safe(path: str | Path, *, max_padding: float = 0.05) -> bool:
+    """Is this fit to be the FIRST slide of a carousel?
+
+    The cover is the only frame that appears in the profile grid, so it is the one
+    that must be full-bleed. Later slides can be padded without anyone noticing.
+    """
+    return cover_padding_fraction(path) <= max_padding

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.6 (2026-08-22)
+
+**Every "face-aware" crop this tool has produced was not face-aware.** PyObjC was never
+installed in the environment it runs under, so `faces.available()` returned False and
+`crop_to_ratio` fell back to a fixed 30%-from-top fraction, silently, every time. The
+degradation is deliberate (face detection must never be a hard dependency) but nothing
+ever said it was happening, and the fallback clips heads on landscape frames. With the
+dependency present, the same photograph yields three detected faces.
+
+- `doctor` now reports face-detection availability and prints the flags to install it.
+- The README's run command includes the Vision extras.
+
+**A padded cover looks fine in the post and terrible in the profile grid.** Sameer spotted
+this on his own grid. Instagram renders the grid thumbnail as a CENTRE SQUARE crop, so
+letterboxing added to fit a landscape frame into 4:5 lands straight through the middle of
+the tile. Measured on a cover that actually shipped: **44% of the grid tile was blurred
+padding** and the faces were half-size.
+
+- New `imaging.grid_tile()`, `cover_padding_fraction()` and `is_grid_safe()`.
+- The rule: **the first slide of a carousel must be full-bleed.** Later slides may be
+  padded, since only the cover appears in the grid. Landscape covers should be cropped
+  face-aware, not padded.
+
 ## 0.4.5 (2026-08-18)
 
 **A photo already published was offered again as a fresh candidate.** Sameer caught it;

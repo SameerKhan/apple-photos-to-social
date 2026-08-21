@@ -131,7 +131,8 @@ photos2social doctor
 Or without installing anything, using [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv run --with Pillow python -m photos_to_posts.cli doctor
+uv run --with Pillow --with numpy --with pyobjc-framework-Vision \
+  --with pyobjc-framework-Quartz python -m photos_to_posts.cli doctor
 ```
 
 `doctor` reports whether Photos is reachable, whether Pillow and ffmpeg are present,

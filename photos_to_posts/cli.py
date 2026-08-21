@@ -117,6 +117,17 @@ def cmd_doctor(args) -> int:
 
     print(f"ffmpeg          : {'found' if shutil.which('ffmpeg') else 'not found (videos disabled)'}")
 
+    # Face detection degrades silently by design, which meant every crop was quietly
+    # falling back to a fixed fraction while still being described as "face-aware".
+    # Doctor now says so out loud.
+    from . import faces as _faces
+    if _faces.available():
+        print("face detection  : available (crops are face-aware)")
+    else:
+        print("face detection  : NOT AVAILABLE - crops fall back to a fixed top fraction,")
+        print("                  which clips heads on landscape frames. Install with:")
+        print("                  --with pyobjc-framework-Vision --with pyobjc-framework-Quartz")
+
     from . import applescript as ps
     ok, why = ps.is_available()
     print(f"Photos app      : {'reachable' if ok else 'UNAVAILABLE - ' + why}")
