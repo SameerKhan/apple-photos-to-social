@@ -331,22 +331,46 @@ GRID_RATIO = 1.0
 
 
 def grid_tile(img):
-    """The centre square Instagram shows in the profile grid."""
+    """The centre square Instagram shows in the profile grid.
+
+    Crops on BOTH axes. The first version only trimmed vertically, so a landscape image
+    came back unchanged and every measurement taken from it described the whole frame
+    rather than the tile.
+    """
     w, h = img.size
     side = min(w, h)
+    left = (w - side) // 2
     top = (h - side) // 2
-    return img.crop((0, top, w, top + side))
+    return img.crop((left, top, left + side, top + side))
 
 
-def cover_padding_fraction(path: str | Path, *, tolerance: int = 6) -> float:
-    """How much of the grid tile is flat letterboxing rather than photograph.
+def cover_padding_fraction(path: str | Path, *, ratio: float = 0.25) -> float:
+    """How much of the grid tile is letterboxing rather than photograph.
 
-    Padding a landscape frame into 4:5 keeps the whole picture in the POST and then
-    puts blurred bars through the middle of the GRID tile. Measured on a real cover
-    that shipped: 44% of the tile was padding and the faces were half-size.
+    Two earlier versions of this were wrong, in instructive ways.
 
-    Detects near-uniform rows, which is what both blurred and solid bars look like
-    once they are averaged across the width. Returns 0.0 when the tile is all image.
+    **Colour variation does not work.** Real padding is a BLURRED copy of the image, not
+    a flat colour, so every padded row still has plenty of left-to-right colour spread.
+    That version scored the real 44%-padded cover at 0%, and its unit test used solid
+    grey bars so it passed anyway.
+
+    **A global detail threshold does not work either.** Blurring destroys high-frequency
+    detail, so low-detail rows are the right signal, but simply counting them means a
+    photograph with a plain wall or a clear sky is condemned: the textured rows set the
+    median and every smooth row is counted as a bar.
+
+    What actually distinguishes letterboxing is that it is **contiguous and anchored to
+    both edges**. Centring a landscape frame in a 4:5 canvas always leaves a bar above
+    AND below. A wall behind a subject is not anchored to both edges, and a sky is
+    anchored to one. So only runs of low-detail rows that reach the top and the bottom
+    count, and only when both are present.
+
+    Measured on real files, which is where the 0.25 comes from. Padded cover: bars at
+    0.46 and 0.71 against a median of 3.53, so both edges are under a quarter of the
+    median and the frame is correctly rejected. Studio portrait against a plain wall:
+    top 1.99 and bottom 7.00 against a median of 6.13, so the bottom is nowhere near
+    low and the both-edges rule passes it. An absolute floor was tried and removed: it
+    put the real cover's 0.71 bar above the line and broke detection entirely.
     """
     try:
         import numpy as np
@@ -355,16 +379,37 @@ def cover_padding_fraction(path: str | Path, *, tolerance: int = 6) -> float:
     with Image.open(path) as im:
         tile = grid_tile(im.convert("RGB"))
         arr = np.asarray(tile, dtype=np.float32)
-    # a padded bar has very little horizontal variation within each row
-    row_spread = arr.std(axis=1).mean(axis=1)
-    flat = int((row_spread < tolerance).sum())
-    return flat / arr.shape[0]
+    h = arr.shape[0]
+    if h < 3 or arr.shape[1] < 3:
+        return 0.0
+    luma = arr[..., 0] * 0.299 + arr[..., 1] * 0.587 + arr[..., 2] * 0.114
+    row_detail = np.abs(np.diff(luma, axis=1)).mean(axis=1)
+    median = float(np.median(row_detail))
+    if median <= 1e-6:
+        return 0.0
+    low = row_detail < median * ratio
+
+    top = 0
+    while top < h and low[top]:
+        top += 1
+    bottom = 0
+    while bottom < h - top and low[h - 1 - bottom]:
+        bottom += 1
+    # One-sided smoothness is a sky or a floor, not letterboxing.
+    if top == 0 or bottom == 0:
+        return 0.0
+    return (top + bottom) / h
 
 
-def is_grid_safe(path: str | Path, *, max_padding: float = 0.05) -> bool:
+def is_grid_safe(path: str | Path, *, max_padding: float = 0.15) -> bool:
     """Is this fit to be the FIRST slide of a carousel?
 
     The cover is the only frame that appears in the profile grid, so it is the one
     that must be full-bleed. Later slides can be padded without anyone noticing.
+
+    The default threshold is set from measurement, not taste. On real files: the padded
+    cover that shipped scores 43%, its face-aware replacement 0%, and a studio portrait
+    against a plain cream wall 7%. 0.15 separates genuine letterboxing from a photograph
+    that merely contains a smooth background.
     """
     return cover_padding_fraction(path) <= max_padding

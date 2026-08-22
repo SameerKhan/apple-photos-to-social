@@ -384,16 +384,17 @@ def cmd_purge(args) -> int:
         for run in sorted(cfg.workspace.glob("run_*")):
             for sub in PIXEL_DIRS:
                 d = run / sub
-                if d.exists():
+                if d.exists() or d.is_symlink():
                     yield d
         # anything outside a run directory is scratch
         for f in cfg.workspace.iterdir():
-            if f.is_file():
+            if f.is_file() or f.is_symlink():
                 yield f
 
     targets = list(_pixels())
     size = sum(f.stat().st_size for d in targets
-               for f in ([d] if d.is_file() else d.rglob("*")) if f.is_file())
+               for f in ([d] if (d.is_file() or d.is_symlink()) else d.rglob("*"))
+               if f.is_file() and not f.is_symlink())
     kept = len(list(cfg.workspace.glob(f"run_*/{KEEP}")))
 
     if args.all:
@@ -417,7 +418,9 @@ def cmd_purge(args) -> int:
             print("cancelled")
             return 1
     for d in targets:
-        if d.is_file():
+        # A symlink is never followed: rmtree refuses one outright, and deleting through
+        # it would reach outside the workspace entirely.
+        if d.is_symlink() or d.is_file():
             d.unlink()
         else:
             shutil.rmtree(d)

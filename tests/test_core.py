@@ -1437,31 +1437,77 @@ def test_a_merely_seen_photo_keeps_the_tighter_radius(tmp_path):
 
 
 def test_a_padded_cover_is_not_grid_safe(tmp_path):
-    # REGRESSION, Sameer spotted it on his own grid: a landscape selfie padded into 4:5
-    # keeps the whole frame in the POST but puts blurred bars straight through the middle
-    # of the SQUARE grid thumbnail. On the cover that shipped, 44% of the tile was padding.
+    # REGRESSION, and the first version of BOTH the check and this test was wrong.
+    #
+    # Sameer spotted on his own grid that a landscape selfie padded into 4:5 keeps the
+    # whole frame in the POST and puts bars through the middle of the SQUARE grid tile.
+    # 44% of the cover that shipped was padding.
+    #
+    # The first check measured colour spread per row, and this test padded with SOLID
+    # grey. It passed. On the real file, whose padding is a BLURRED copy of the photo
+    # and therefore full of colour, the check reported 0% and called it grid-safe.
+    # So the padding here MUST be blurred, not flat, or the test lies again.
     pytest.importorskip("numpy")
-    from PIL import Image
+    from PIL import Image, ImageFilter
     import numpy as np
     rng = np.random.default_rng(1)
     photo = Image.fromarray(rng.integers(0, 255, (600, 1080, 3)).astype("uint8"))
-    padded = Image.new("RGB", (1080, 1350), (128, 128, 128))
+    blurred_bg = photo.resize((1080, 1350), Image.LANCZOS).filter(ImageFilter.GaussianBlur(28))
+    padded = blurred_bg.copy()
     padded.paste(photo, (0, (1350 - 600) // 2))
     p = tmp_path / "padded.jpg"; padded.save(p, quality=95)
+
     frac = imaging.cover_padding_fraction(p)
-    assert frac > 0.3, f"padding not detected, got {frac:.2f}"
+    assert frac > 0.25, f"blurred letterboxing not detected, got {frac:.2f}"
     assert not imaging.is_grid_safe(p)
 
     full = Image.fromarray(rng.integers(0, 255, (1350, 1080, 3)).astype("uint8"))
     q = tmp_path / "full.jpg"; full.save(q, quality=95)
+    assert imaging.cover_padding_fraction(q) < 0.05
     assert imaging.is_grid_safe(q), "a full-bleed cover should pass"
 
 
-def test_grid_tile_is_the_centre_square(tmp_path):
+def test_a_smooth_background_is_not_mistaken_for_padding(tmp_path):
+    # [codex+gemini] A global low-detail threshold condemns any photograph with a plain
+    # wall or a clear sky: the textured rows set the median and every smooth row counts
+    # as a bar. Measured at 0.35 on a wall that occupies a third of the frame.
+    # Letterboxing is distinguished by being contiguous AND anchored to BOTH edges.
+    pytest.importorskip("numpy")
     from PIL import Image
-    im = Image.new("RGB", (1080, 1350), "white")
-    t = imaging.grid_tile(im)
-    assert t.size == (1080, 1080)
+    import numpy as np
+    rng = np.random.default_rng(2)
+    # The subject must be PHOTOGRAPH-like, not white noise. Pure noise against a smooth
+    # wall creates a detail ratio no real photo has (37 vs 1), which makes any relative
+    # threshold fire. On the real studio portrait the wall reads 1.99 against a median
+    # of 6.13, a ratio of 0.32, comfortably above the 0.25 line.
+    from PIL import ImageFilter
+    wall = np.random.default_rng(3).normal(226, 6.0, (1350, 1080, 3))
+    img = np.clip(wall, 0, 255).astype("uint8")
+    subject = Image.fromarray(rng.integers(0, 255, (700, 700, 3)).astype("uint8"))
+    subject = subject.filter(ImageFilter.GaussianBlur(2))          # photo-like, not noise
+    img[500:1200, 200:900] = np.asarray(subject)
+    p = tmp_path / "portrait.jpg"; Image.fromarray(img).save(p, quality=95)
+    assert imaging.is_grid_safe(p), (
+        f"a plain backdrop was called padding: {imaging.cover_padding_fraction(p):.2f}")
+
+    # a sky along the TOP only is not letterboxing either
+    sky = rng.integers(0, 255, (1350, 1080, 3)).astype("uint8")
+    sky[:400] = np.clip(np.random.default_rng(4).normal(180, 2, (400, 1080, 3)),
+                        0, 255).astype("uint8")
+    q = tmp_path / "sky.jpg"; Image.fromarray(sky).save(q, quality=95)
+    assert imaging.is_grid_safe(q), (
+        f"a sky was called padding: {imaging.cover_padding_fraction(q):.2f}")
+
+
+def test_grid_tile_is_the_centre_square(tmp_path):
+    # [codex+gemini] The first version only cropped vertically, so a LANDSCAPE image came
+    # back unchanged and every measurement taken from it described the whole frame rather
+    # than the tile. The portrait-only assertion passed throughout.
+    from PIL import Image
+    for size in ((1080, 1350), (1600, 900), (900, 900)):
+        t = imaging.grid_tile(Image.new("RGB", size, "white"))
+        side = min(size)
+        assert t.size == (side, side), f"{size} -> {t.size}"
 
 
 def test_review_announces_when_face_detection_is_off(monkeypatch, tmp_path):
@@ -1507,3 +1553,36 @@ def test_purge_keeps_manifests_by_default(tmp_path, monkeypatch, capsys):
 
     rc = cli.cmd_purge(argparse.Namespace(config=None, yes=True, all=True))
     assert rc == 0 and not ws.exists(), "--all should remove everything"
+
+
+def test_published_radius_follows_history_when_not_set(tmp_path):
+    # [gemini] Raising history_max_distance alone used to make load_config RAISE, because
+    # published defaulted to 12 and was then below it. A perfectly valid config rejected.
+    cfg_file = tmp_path / "c.toml"
+    cfg_file.write_text("[review]\nhistory_max_distance = 15\n")
+    cfg = load_config(str(cfg_file))
+    assert cfg.history_max_distance == 15
+    assert cfg.published_max_distance >= 15, "published must follow history when unset"
+
+    cfg_file.write_text("[review]\nhistory_max_distance = 8\npublished_max_distance = 4\n")
+    with pytest.raises(ValueError, match="published_max_distance"):
+        load_config(str(cfg_file))
+
+
+def test_purge_does_not_follow_a_symlink(tmp_path, monkeypatch):
+    # [gemini] shutil.rmtree refuses a symlink outright, so purge crashed on one. Worse,
+    # following it would delete outside the workspace entirely.
+    from photos_to_posts import cli
+    outside = tmp_path / "precious"; outside.mkdir()
+    (outside / "keep.txt").write_text("do not delete me")
+    ws = tmp_path / "work"; run = ws / "run_00001"; run.mkdir(parents=True)
+    (run / "manifest.csv").write_text("index,uuid\n")
+    (run / "export").symlink_to(outside, target_is_directory=True)
+
+    cfg = Config(); cfg.workspace = ws
+    monkeypatch.setattr(cli, "load_config", lambda _p=None: cfg)
+    rc = cli.cmd_purge(argparse.Namespace(config=None, yes=True, all=False))
+    assert rc == 0
+    assert outside.exists() and (outside / "keep.txt").exists(), "purge followed a symlink"
+    assert not (run / "export").exists(), "the symlink itself should be gone"
+    assert (run / "manifest.csv").exists()

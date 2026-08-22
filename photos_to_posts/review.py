@@ -23,7 +23,7 @@ from . import imaging
 from . import quality
 from .config import Config, haversine_m
 from .ledger import (EXCLUDED_PRIVATE, POSTED, SEEN, SETTLED, SETTLED_STRICT,
-                     SHORTLISTED, TERMINAL, Ledger, hamming)
+                     TERMINAL, Ledger, hamming)
 
 TERMINAL_STATUSES = tuple(sorted(TERMINAL))
 
@@ -276,8 +276,11 @@ def screen_against_history(frames: Sequence[imaging.Frame], ledger: Ledger, cfg:
         def _matches(uuid, stored, status):
             if uuid == own:
                 return False
-            limit = (cfg.published_max_distance
-                     if status in (POSTED, SHORTLISTED) else cfg.history_max_distance)
+            # POSTED only. SHORTLISTED is deliberately absent from SETTLED, so it never
+            # reaches this function at all, and it should not: an unpublished pick is an
+            # open decision that is MEANT to come back, and so are frames like it.
+            limit = (cfg.published_max_distance if status == POSTED
+                     else cfg.history_max_distance)
             return hamming(stored, frame.phash) <= limit
 
         if any(_matches(uuid, stored, st) for uuid, stored, st in history):

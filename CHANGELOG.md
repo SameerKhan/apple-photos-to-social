@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.8 (2026-08-22)
+
+Five defects from a three-model review of 0.4.5 to 0.4.7. The grid check shipped
+**broken**, and the test I wrote for it hid that.
+
+- **`cover_padding_fraction` did not detect real padding.** It measured colour spread per
+  row, but real letterboxing is a BLURRED copy of the photo and therefore full of colour.
+  On the actual 44%-padded cover it returned **0% and called it grid-safe**. The unit test
+  padded with solid grey, so it passed. Now it measures high-frequency detail, requires
+  the low-detail run to be contiguous AND anchored to both edges, and is calibrated
+  against real measurements (bars at 0.46 and 0.71 against a median of 3.53).
+- **`grid_tile` never cropped horizontally.** For a landscape image it returned the frame
+  unchanged, so every measurement taken from it described the whole picture rather than
+  the tile. The test asserted portrait dimensions only. [codex+gemini]
+- **A valid config was rejected.** Raising `history_max_distance` alone made `load_config`
+  raise, because `published_max_distance` defaulted to 12 and was then below it. Left
+  unset it now follows history. [gemini]
+- **`purge` crashed on a directory symlink**, and following one would have deleted outside
+  the workspace entirely. It now unlinks the symlink itself. [gemini]
+- **The `SHORTLISTED` branch in `screen_against_history` was dead**, since shortlisted rows
+  are deliberately absent from `SETTLED`. Removed rather than "fixed": an unpublished pick
+  is an open decision that is meant to come back, and so are frames like it. [codex+gemini]
+
 ## 0.4.7 (2026-08-22)
 
 **`purge` destroyed manifests, and that loss is permanent.**

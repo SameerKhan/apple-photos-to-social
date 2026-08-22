@@ -135,8 +135,14 @@ def load_config(path: str | Path | None = None) -> Config:
     cfg.resurface_seen = bool(review.get("resurface_seen", cfg.resurface_seen))
     cfg.allow_unfiltered = bool(review.get("allow_unfiltered", cfg.allow_unfiltered))
     cfg.history_max_distance = int(review.get("history_max_distance", cfg.history_max_distance))
-    cfg.published_max_distance = int(
-        review.get("published_max_distance", cfg.published_max_distance))
+    # Only enforce the ordering when the user actually chose a value. Raising
+    # history_max_distance alone used to make load_config raise, because the published
+    # default of 12 was then below it, which rejects a perfectly reasonable config.
+    if "published_max_distance" in review:
+        cfg.published_max_distance = int(review["published_max_distance"])
+    else:
+        cfg.published_max_distance = max(cfg.published_max_distance,
+                                         cfg.history_max_distance)
 
     privacy = raw.get("privacy", {})
     cfg.exclude_albums = list(privacy.get("exclude_albums", []))
@@ -185,7 +191,8 @@ def load_config(path: str | Path | None = None) -> Config:
     if cfg.published_max_distance < cfg.history_max_distance:
         raise ValueError("review.published_max_distance must be >= history_max_distance:"
                          " something already published cannot be screened more loosely"
-                         " than something merely seen")
+                         " than something merely seen. Either raise it or leave it unset,"
+                         " in which case it follows history_max_distance automatically.")
 
     voice = raw.get("voice", {})
     cfg.voice_guides = list(voice.get("guides", []))
